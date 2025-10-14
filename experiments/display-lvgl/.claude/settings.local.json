@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir:*)",
+      "Bash(git submodule add:*)",
+      "Read(//c/Code/bedlift-esp-idf/experiments/display/main/**)",
+      "Bash(cat:*)",
+      "WebFetch(domain:learn.adafruit.com)",
+      "Read(//c/Code/bedlift-esp-idf/experiments/display/**)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

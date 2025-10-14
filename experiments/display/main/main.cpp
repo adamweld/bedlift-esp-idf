@@ -42,9 +42,9 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "Backlight set to maximum");
 
     // Set rotation (0 = portrait, 1 = landscape, 2 = portrait inverted, 3 = landscape inverted)
-    display.setRotation(1);
+    display.setRotation(3);
 
-    ESP_LOGI(TAG, "Rotation set to 1 (landscape)");
+    ESP_LOGI(TAG, "Rotation set to 3 (landscape)");
 
     // Get display dimensions
     int width = display.width();

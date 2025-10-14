@@ -53,7 +53,7 @@ public:
             cfg.dummy_read_bits = 1;      // Dummy read bits before non-pixel read
             cfg.readable = false;         // Data read is not supported
             cfg.invert = true;            // Invert panel brightness
-            cfg.rgb_order = true;         // RGB order (false = RGB, true = BGR) - trying BGR
+            cfg.rgb_order = false;         // RGB order (false = RGB, true = BGR)
             cfg.dlen_16bit = false;       // Data length 16-bit units
             cfg.bus_shared = false;       // Bus shared with other devices
 

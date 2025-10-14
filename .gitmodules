@@ -1,0 +1,6 @@
+[submodule "experiments/display-lvgl/components/LovyanGFX"]
+	path = experiments/display-lvgl/components/LovyanGFX
+	url = https://github.com/lovyan03/LovyanGFX.git
+[submodule "experiments/display/components/LovyanGFX"]
+	path = experiments/display/components/LovyanGFX
+	url = https://github.com/lovyan03/LovyanGFX.git

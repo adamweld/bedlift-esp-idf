@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "freertos.h": "c",
+        "esp_lcd_panel_io.h": "c"
+    }
+
+}

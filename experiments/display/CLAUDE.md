@@ -1,0 +1,1 @@
+- for python scripts, use the virtual environment and uv tooling

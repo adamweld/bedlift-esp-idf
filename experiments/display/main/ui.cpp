@@ -2,67 +2,62 @@
 #include "config.hpp"
 #include "assets/icons.hpp"
 #include <cstring>
+#include <cstring>  // for strcmp in icon lookup
 
 // ============================================================================
 // StatusBar Implementation
 // ============================================================================
 StatusBar::StatusBar()
-    : gfx(nullptr), x_(0), y_(0), w_(0), h_(0),
-      battery_level(100), is_connected(false) {
-    message[0] = '\0';
+    : gfx(nullptr), x_(0), y_(0), w_(0), h_(0), monitors_(nullptr) {
 }
 
-void StatusBar::init(LGFX* display, int x, int y, int w, int h) {
+void StatusBar::init(LGFX* display, int x, int y, int w, int h, MonitorStates* monitors) {
     gfx = display;
     x_ = x;
     y_ = y;
     w_ = w;
     h_ = h;
+    monitors_ = monitors;
 }
 
 void StatusBar::draw() {
-    if (!gfx) return;
+    if (!gfx || !monitors_) return;
 
-    // Background
-    gfx->fillRect(x_, y_, w_, h_, COLOR_STATUS_BAR_BG);
+    // Background (blank/black)
+    gfx->fillRect(x_, y_, w_, h_, COLOR_BLACK);
 
-    // Battery indicator (right side)
-    int batt_w = 30;
-    int batt_h = h_ - 4;
-    int batt_x = x_ + w_ - batt_w - 4;
-    int batt_y = y_ + 2;
+    // Dim border
+    gfx->drawRect(x_, y_, w_, h_, COLOR_DARKGREY);
 
-    gfx->drawRect(batt_x, batt_y, batt_w, batt_h, COLOR_STATUS_BAR_TEXT);
-    int fill_w = (batt_w - 4) * battery_level / 100;
-    gfx->fillRect(batt_x + 2, batt_y + 2, fill_w, batt_h - 4, COLOR_STATUS_BAR_ACCENT);
+    // Create array of monitor states for iteration
+    bool monitor_states[5] = {
+        monitors_->dev_mode,
+        monitors_->motors,
+        monitors_->sensors,
+        monitors_->lock,
+        monitors_->battery
+    };
 
-    // Connection status (left side)
-    gfx->setTextColor(COLOR_STATUS_BAR_TEXT);
-    gfx->setTextSize(1);
-    gfx->setTextDatum(middle_left);
-    gfx->drawString(is_connected ? "CONN" : "----", x_ + 4, y_ + h_ / 2);
+    // Draw monitors from left to right with spacing
+    int icon_spacing = 2;
+    int current_x = x_ + 4;  // Start with 4px padding from left edge
 
-    // Message (center)
-    if (message[0] != '\0') {
-        gfx->setTextDatum(middle_center);
-        gfx->drawString(message, x_ + w_ / 2, y_ + h_ / 2);
-    }
-}
+    for (int i = 0; i < 5; i++) {
+        const uint8_t* icon = nullptr;
 
-void StatusBar::setBatteryLevel(int percent) {
-    battery_level = percent > 100 ? 100 : (percent < 0 ? 0 : percent);
-}
+        // Get the appropriate icon based on monitor state
+        if (monitor_states[i]) {
+            icon = getMonitorIconTrue(i);
+        } else {
+            icon = getMonitorIconFalse(i);
+        }
 
-void StatusBar::setConnectionStatus(bool connected) {
-    is_connected = connected;
-}
-
-void StatusBar::setMessage(const char* msg) {
-    if (msg) {
-        strncpy(message, msg, sizeof(message) - 1);
-        message[sizeof(message) - 1] = '\0';
-    } else {
-        message[0] = '\0';
+        // Only draw if icon exists (null = hide)
+        if (icon) {
+            int icon_y = y_ + (h_ - MONITOR_ICON_SIZE) / 2;  // Center vertically
+            gfx->drawBitmap(current_x, icon_y, icon, MONITOR_ICON_SIZE, MONITOR_ICON_SIZE, COLOR_WHITE);
+            current_x += MONITOR_ICON_SIZE + icon_spacing;
+        }
     }
 }
 
@@ -71,7 +66,7 @@ void StatusBar::setMessage(const char* msg) {
 // ============================================================================
 ModePanel::ModePanel()
     : gfx(nullptr), x_(0), y_(0), w_(0), h_(0),
-      current_mode(OperationMode::MANUAL) {}
+      current_mode(OperationMode::UP_DOWN) {}
 
 void ModePanel::init(LGFX* display, int x, int y, int w, int h) {
     gfx = display;
@@ -105,32 +100,30 @@ void ModePanel::setMode(OperationMode mode) {
 }
 
 const char* ModePanel::getModeName() const {
-    switch (current_mode) {
-        case OperationMode::MANUAL:   return "MANUAL";
-        case OperationMode::AUTO:     return "AUTO";
-        case OperationMode::PRESET_1: return "PSET 1";
-        case OperationMode::PRESET_2: return "PSET 2";
-        case OperationMode::LEVEL:    return "LEVEL";
-        default: return "UNKNOWN";
+    int mode_index = (int)current_mode;
+    if (mode_index >= 0 && mode_index < (int)OperationMode::MODE_COUNT) {
+        return MODE_CONFIGS[mode_index].name;
     }
+    return "UNKNOWN";
 }
 
 void ModePanel::drawIcon() {
-    // Draw placeholder icon - will be replaced with actual icons from assets
-    int icon_size = w_ / 2;
-    int icon_x = x_ + (w_ - icon_size) / 2;
-    int icon_y = y_ + icon_size / 2;
+    // Get icon data for current mode
+    const uint8_t* icon_data = getModeIcon((int)current_mode);
 
-    // Simple placeholder: draw a filled circle with mode indicator
-    gfx->fillCircle(icon_x + icon_size / 2, icon_y + icon_size / 2, icon_size / 2, COLOR_MODE_ICON_BG);
-    gfx->drawCircle(icon_x + icon_size / 2, icon_y + icon_size / 2, icon_size / 2, COLOR_MODE_ICON_FG);
+    if (!icon_data) {
+        // Fallback if icon not found
+        return;
+    }
 
-    // Draw mode number in circle
-    gfx->setTextColor(COLOR_MODE_ICON_FG);
-    gfx->setTextSize(2);
-    gfx->setTextDatum(middle_center);
-    char mode_num[2] = {(char)('0' + (int)current_mode), '\0'};
-    gfx->drawString(mode_num, icon_x + icon_size / 2, icon_y + icon_size / 2);
+    // Center the 64x64 icon in the available space
+    int icon_area_h = (h_ * 2) / 3;
+    int icon_x = x_ + (w_ - MODE_ICON_SIZE) / 2;
+    int icon_y = y_ + (icon_area_h - MODE_ICON_SIZE) / 2;
+
+    // Draw monochrome bitmap
+    // LovyanGFX drawBitmap: drawBitmap(x, y, bitmap_data, width, height, color)
+    gfx->drawBitmap(icon_x, icon_y, icon_data, MODE_ICON_SIZE, MODE_ICON_SIZE, COLOR_MODE_ICON_FG);
 }
 
 // ============================================================================
@@ -194,7 +187,8 @@ void LevelDisplay::drawPlaceholder() {
 // ButtonPanel Implementation
 // ============================================================================
 ButtonPanel::ButtonPanel()
-    : gfx(nullptr), x_(0), y_(0), w_(0), h_(0), button_height(0) {
+    : gfx(nullptr), x_(0), y_(0), w_(0), h_(0), button_height(0),
+      current_mode(OperationMode::UP_DOWN) {
     for (int i = 0; i < 3; i++) {
         buttons[i].label = "";
         buttons[i].is_pressed = false;
@@ -230,34 +224,56 @@ void ButtonPanel::setButtonState(int button_index, bool pressed) {
 }
 
 void ButtonPanel::updateForMode(OperationMode mode) {
-    switch (mode) {
-        case OperationMode::MANUAL:
-            setButtonLabels("Up", "MODE", "Down");
-            break;
-        case OperationMode::AUTO:
-            setButtonLabels("+", "MODE", "-");
-            break;
-        case OperationMode::PRESET_1:
-            setButtonLabels("Save", "MODE", "Load");
-            break;
-        case OperationMode::PRESET_2:
-            setButtonLabels("Save", "MODE", "Load");
-            break;
-        case OperationMode::LEVEL:
-            setButtonLabels("Cal+", "MODE", "Cal-");
-            break;
-        default:
-            setButtonLabels("?", "MODE", "?");
-            break;
-    }
+    current_mode = mode;
+    // Labels kept for MODE button (middle button still uses text)
+    buttons[1].label = "MODE";
 }
 
 void ButtonPanel::drawButton(int index) {
     if (index < 0 || index >= 3) return;
 
     int button_y = y_ + (index * button_height);
-    drawButtonRect(x_, button_y, w_, button_height,
-                   buttons[index].is_pressed, buttons[index].label);
+
+    // Button 0 (top) = UP button with icon
+    // Button 1 (middle) = MODE button with text
+    // Button 2 (bottom) = DOWN button with icon
+
+    if (index == 0) {
+        // Up button - use icon
+        const uint8_t* icon = getButtonUpIcon((int)current_mode);
+        if (icon) {
+            drawIconButton(x_, button_y, w_, button_height,
+                          buttons[index].is_pressed, icon, BUTTON_ICON_SIZE);
+        } else {
+            // Fallback to text if icon not available
+            drawButtonRect(x_, button_y, w_, button_height,
+                          buttons[index].is_pressed, "UP");
+        }
+    }
+    else if (index == 1) {
+        // Mode button - use icon
+        const uint8_t* icon = getButtonModeIcon((int)current_mode);
+        if (icon) {
+            drawIconButton(x_, button_y, w_, button_height,
+                          buttons[index].is_pressed, icon, BUTTON_ICON_SIZE);
+        } else {
+            // Fallback to text if icon not available
+            drawButtonRect(x_, button_y, w_, button_height,
+                          buttons[index].is_pressed, "MODE");
+        }
+    }
+    else if (index == 2) {
+        // Down button - use icon
+        const uint8_t* icon = getButtonDownIcon((int)current_mode);
+        if (icon) {
+            drawIconButton(x_, button_y, w_, button_height,
+                          buttons[index].is_pressed, icon, BUTTON_ICON_SIZE);
+        } else {
+            // Fallback to text if icon not available
+            drawButtonRect(x_, button_y, w_, button_height,
+                          buttons[index].is_pressed, "DN");
+        }
+    }
 }
 
 void ButtonPanel::drawButtonRect(int x, int y, int w, int h, bool inverted, const char* label) {
@@ -274,4 +290,21 @@ void ButtonPanel::drawButtonRect(int x, int y, int w, int h, bool inverted, cons
     gfx->setTextDatum(middle_center);
     gfx->setTextSize(1);
     gfx->drawString(label, x + w / 2, y + h / 2);
+}
+
+void ButtonPanel::drawIconButton(int x, int y, int w, int h, bool pressed, const uint8_t* icon_data, int icon_size) {
+    uint16_t fill_color = pressed ? COLOR_BUTTON_PRESSED : COLOR_BUTTON_NORMAL;
+    uint16_t outline_color = COLOR_BUTTON_BORDER;
+    uint16_t icon_color = pressed ? COLOR_BUTTON_TEXT_INV : COLOR_BUTTON_TEXT;
+
+    // Draw button background
+    gfx->fillRect(x, y, w, h, fill_color);
+    gfx->drawRect(x, y, w, h, outline_color);
+
+    // Center the icon in the button
+    int icon_x = x + (w - icon_size) / 2;
+    int icon_y = y + (h - icon_size) / 2;
+
+    // Draw the monochrome bitmap icon
+    gfx->drawBitmap(icon_x, icon_y, icon_data, icon_size, icon_size, icon_color);
 }

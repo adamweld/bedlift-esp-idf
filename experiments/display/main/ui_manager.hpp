@@ -12,7 +12,7 @@ public:
     UIManager();
 
     // Initialize display and all UI panels
-    void init(LGFX* display);
+    void init(LGFX* display, bool dev_flag);
 
     // Refresh entire UI
     void refresh();
@@ -31,11 +31,6 @@ public:
     // Button state updates
     void setButtonState(int button_index, bool pressed);
 
-    // Status updates
-    void setBatteryLevel(int percent);
-    void setConnectionStatus(bool connected);
-    void setStatusMessage(const char* msg);
-
     // Level display updates
     void setLevelAngle(float pitch, float roll);
 
@@ -45,8 +40,15 @@ public:
     LevelDisplay& getLevelDisplay() { return level_display; }
     ButtonPanel& getButtonPanel() { return button_panel; }
 
+    // Access to monitor state (for background threads)
+    MonitorStates& getMonitors() { return monitors; }
+
 private:
     LGFX* gfx;
+    bool dev_flag;  // Developer mode flag (enables Motor 1-4 modes)
+
+    // Monitor state (shared with background threads)
+    MonitorStates monitors;
 
     // UI Panel instances
     StatusBar status_bar;

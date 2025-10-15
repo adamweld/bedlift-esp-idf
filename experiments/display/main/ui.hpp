@@ -2,40 +2,40 @@
 
 #include "lgfx_config.hpp"
 #include "pins.hpp"
+#include "config.hpp"
 
 // Forward declarations
 class LGFX;
 
 // ============================================================================
-// StatusBar - Top status panel
+// StatusBar - Top status panel with monitors
 // ============================================================================
 class StatusBar {
 public:
     StatusBar();
-    void init(LGFX* display, int x, int y, int w, int h);
+    void init(LGFX* display, int x, int y, int w, int h, MonitorStates* monitors);
     void draw();
-    void setBatteryLevel(int percent);
-    void setConnectionStatus(bool connected);
-    void setMessage(const char* msg);
 
 private:
     LGFX* gfx;
     int x_, y_, w_, h_;
-    int battery_level;
-    bool is_connected;
-    char message[32];
+    MonitorStates* monitors_;
 };
 
 // ============================================================================
 // ModePanel - Left panel showing current mode with icon
 // ============================================================================
 enum class OperationMode {
-    MANUAL = 0,
-    AUTO,
-    PRESET_1,
-    PRESET_2,
-    LEVEL,
-    MODE_COUNT  // For cycling
+    UP_DOWN = 0,    // Manual up/down control
+    ROLL,           // Roll adjustment
+    PITCH,          // Pitch adjustment
+    TORSION,        // Torsion adjustment
+    LEVEL,          // Level mode
+    MOTOR_1,        // Individual motor 1 control
+    MOTOR_2,        // Individual motor 2 control
+    MOTOR_3,        // Individual motor 3 control
+    MOTOR_4,        // Individual motor 4 control
+    MODE_COUNT      // For cycling - must be last
 };
 
 class ModePanel {
@@ -95,7 +95,9 @@ private:
     int x_, y_, w_, h_;
     int button_height;
     ButtonInfo buttons[3];  // [0]=up, [1]=mode, [2]=down
+    OperationMode current_mode;
 
     void drawButton(int index);
     void drawButtonRect(int x, int y, int w, int h, bool inverted, const char* label);
+    void drawIconButton(int x, int y, int w, int h, bool pressed, const uint8_t* icon_data, int icon_size);
 };

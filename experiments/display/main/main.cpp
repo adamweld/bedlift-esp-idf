@@ -1,9 +1,12 @@
 #include <stdio.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "esp_log.h"
+#include "esp_sleep.h"
 #include "driver/gpio.h"
+#include "driver/rtc_io.h"
 #include "lgfx_config.hpp"
 #include "pins.hpp"
 #include "config.hpp"
@@ -18,55 +21,161 @@ UIManager ui;
 // GPIO event queue
 static QueueHandle_t gpio_event_queue = NULL;
 
+// Activity tracking
+static volatile int64_t last_activity_time = 0;
+static volatile bool is_dimmed = false;
+
+// Dev mode flag
+static bool dev_flag = false;
+
+// ============================================================================
+// Activity Timer
+// ============================================================================
+void reset_activity_timer(void) {
+    last_activity_time = esp_timer_get_time();
+
+    // Restore full brightness if dimmed
+    if (is_dimmed) {
+        display.setBrightness(BACKLIGHT_FULL);
+        is_dimmed = false;
+        ESP_LOGI(TAG, "Display brightness restored to full");
+    }
+}
+
+int64_t get_idle_time_ms(void) {
+    return (esp_timer_get_time() - last_activity_time) / 1000;
+}
+
+// ============================================================================
+// Power Management
+// ============================================================================
+void perform_shutdown(void) {
+    ESP_LOGI(TAG, "Performing shutdown sequence...");
+
+    // TODO: Stop any active motor movements
+    // TODO: Save current state/settings to NVS
+    // TODO: Disable power outputs
+    // TODO: Turn off display backlight
+
+    ESP_LOGI(TAG, "Shutdown complete");
+}
+
+void enter_deep_sleep(void) {
+    ESP_LOGI(TAG, "Entering deep sleep mode");
+
+    // Perform shutdown tasks
+    perform_shutdown();
+
+    // Fade to black from current brightness
+    int current_brightness = is_dimmed ? BACKLIGHT_DIMMED : BACKLIGHT_FULL;
+    for (int brightness = current_brightness; brightness >= 0; brightness -= 8) {
+        display.setBrightness(brightness);
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+
+    display.fillScreen(COLOR_BLACK);
+    display.setBrightness(0);
+
+
+    // Wait for any button releases to settle
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    // Generate io_mask for GPIO 1 (MODE) and GPIO 2 (UP)
+    uint64_t io_mask = (1ULL << GPIO_BUTTON_MODE) | (1ULL << GPIO_BUTTON_UP);
+
+    // Keep RTC peripherals powered during sleep for GPIO wakeup
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+
+    // Configure RTC GPIO pull-downs for wake pins (keep them LOW when not pressed)
+    // This ensures pins stay LOW during deep sleep and only go HIGH when button pressed
+    rtc_gpio_pullup_dis((gpio_num_t)GPIO_BUTTON_MODE);
+    rtc_gpio_pulldown_en((gpio_num_t)GPIO_BUTTON_MODE);
+
+    rtc_gpio_pullup_dis((gpio_num_t)GPIO_BUTTON_UP);
+    rtc_gpio_pulldown_en((gpio_num_t)GPIO_BUTTON_UP);
+
+    ESP_LOGI(TAG, "RTC GPIO pull-downs configured for wake pins");
+
+    // Configure EXT1 wakeup (wake when any pin goes HIGH)
+    esp_sleep_enable_ext1_wakeup_io(io_mask, ESP_EXT1_WAKEUP_ANY_HIGH);
+
+    ESP_LOGI(TAG, "Wake sources configured: GPIO %d (MODE), GPIO %d (UP)",
+             GPIO_BUTTON_MODE, GPIO_BUTTON_UP);
+
+    // Small delay to ensure log is flushed
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    // Enter deep sleep
+    esp_deep_sleep_start();
+}
+
 // ============================================================================
 // Startup Animation
 // ============================================================================
 void show_startup_animation(void) {
-    int32_t i, i2;
     int32_t cx = SCREEN_WIDTH / 2;
     int32_t cy = SCREEN_HEIGHT / 2;
-    int32_t w = SCREEN_WIDTH;
-    int32_t h = SCREEN_HEIGHT;
-    int32_t n = (w < h) ? w : h;
+    // int32_t w = SCREEN_WIDTH;
+    // int32_t h = SCREEN_HEIGHT;
 
     ESP_LOGI(TAG, "Startup animation");
 
-    // Filled round rectangles
-    display.fillScreen(COLOR_BLACK);
-    for (i = n; i > 10; i -= 3) {
-        i2 = i / 2;
-        uint16_t color = display.color565(0, i % 256, 0);
-        display.fillRoundRect(cx - i2, cy - i2, i, i, i / 8, color);
-        vTaskDelay(pdMS_TO_TICKS(STARTUP_ANIMATION_FRAME_DELAY_MS));
-    }
-    vTaskDelay(pdMS_TO_TICKS(100));
+    // Start with pink background
+    display.fillScreen(COLOR_PINK);
 
-    // Filled circles
-    display.fillScreen(COLOR_BLACK);
-    int32_t max_radius = (h < w) ? (h / 2 - 2) : (w / 2 - 2);
-    for (i = max_radius; i > 5; i -= 2) {
-        uint16_t color = display.color565(0, i * 3, i * 3);
-        display.fillCircle(cx, cy, i, color);
-        vTaskDelay(pdMS_TO_TICKS(STARTUP_ANIMATION_FRAME_DELAY_MS));
-    }
-    vTaskDelay(pdMS_TO_TICKS(100));
+    // Calculate maximum triangle size to cover entire display
+    // For equilateral triangle centered on screen, we need to reach corners
+    float max_radius = sqrt(cx * cx + cy * cy) * 1.6f;  // Distance to corner + margin
+    int32_t min_size = 15;  // Minimum triangle size
 
-    // Filled triangles
-    display.fillScreen(COLOR_BLACK);
-    int32_t max_tri_size = (cx < cy) ? cx : cy;
-    for (i = max_tri_size - 5; i > 10; i -= 3) {
-        int32_t x1 = cx;
-        int32_t y1 = cy - (i * 2 / 1.732);
-        int32_t x2 = cx - i;
-        int32_t y2 = cy + (i / 1.732);
-        int32_t x3 = cx + i;
-        int32_t y3 = cy + (i / 1.732);
+    // Shrinking triangle animation
+    for (int32_t size = (int32_t)max_radius; size > min_size; size -= 3) {
+        // Calculate equilateral triangle vertices
+        float angle1 = -90.0f * 3.14159f / 180.0f;  // Top vertex (pointing up)
+        float angle2 = 30.0f * 3.14159f / 180.0f;   // Bottom right
+        float angle3 = 150.0f * 3.14159f / 180.0f;  // Bottom left
 
-        uint16_t color = display.color565(i % 256, i % 256, 0);
+        int32_t x1 = cx + (int32_t)(size * cos(angle1));
+        int32_t y1 = cy + (int32_t)(size * sin(angle1));
+        int32_t x2 = cx + (int32_t)(size * cos(angle2));
+        int32_t y2 = cy + (int32_t)(size * sin(angle2));
+        int32_t x3 = cx + (int32_t)(size * cos(angle3));
+        int32_t y3 = cy + (int32_t)(size * sin(angle3));
+
+        // Color pattern: cycle through hues while dimming
+        // Start with bright colors, end with dim colors
+        float progress = (float)(max_radius - size) / (max_radius - min_size);
+
+        // Hue rotation: start at 330° (pink) and cycle through spectrum
+        int hue = (330 + (int)(progress * 360.0f)) % 360;
+
+        // Brightness: start bright, fade to dim
+        float brightness = 1.0f - (progress * 0.7f);  // Keep at least 30% brightness
+
+        // Convert HSV to RGB
+        float h = hue / 60.0f;
+        float c = brightness;
+        float x = c * (1.0f - fabs(fmod(h, 2.0f) - 1.0f));
+
+        float r, g, b;
+        if (h < 1.0f) { r = c; g = x; b = 0; }
+        else if (h < 2.0f) { r = x; g = c; b = 0; }
+        else if (h < 3.0f) { r = 0; g = c; b = x; }
+        else if (h < 4.0f) { r = 0; g = x; b = c; }
+        else if (h < 5.0f) { r = x; g = 0; b = c; }
+        else { r = c; g = 0; b = x; }
+
+        uint16_t color = display.color565(
+            (uint8_t)(r * 255.0f),
+            (uint8_t)(g * 255.0f),
+            (uint8_t)(b * 255.0f)
+        );
+
         display.fillTriangle(x1, y1, x2, y2, x3, y3, color);
         vTaskDelay(pdMS_TO_TICKS(STARTUP_ANIMATION_FRAME_DELAY_MS));
     }
-    vTaskDelay(pdMS_TO_TICKS(500));
+
+    vTaskDelay(pdMS_TO_TICKS(200));
 }
 
 // ============================================================================
@@ -123,26 +232,31 @@ void init_gpio_buttons(void) {
 // Button Event Handlers
 // ============================================================================
 void handle_button_up_press() {
+    reset_activity_timer();
     OperationMode mode = ui.getMode();
     ESP_LOGI(TAG, "Button UP pressed in mode %d", (int)mode);
 
     switch (mode) {
-        case OperationMode::MANUAL:
-            ESP_LOGI(TAG, "Manual: Move up");
-            // TODO: Motor control - move up
+        case OperationMode::UP_DOWN:
+            ESP_LOGI(TAG, "Up/Down: Move up");
+            // TODO: Motor control - move all up
             break;
-        case OperationMode::AUTO:
-            ESP_LOGI(TAG, "Auto: Increase target");
-            // TODO: Adjust target position
-            break;
-        case OperationMode::PRESET_1:
-        case OperationMode::PRESET_2:
-            ESP_LOGI(TAG, "Preset: Save");
-            // TODO: Save current position to preset
+        case OperationMode::ROLL:
+        case OperationMode::PITCH:
+        case OperationMode::TORSION:
+            ESP_LOGI(TAG, "%s: Increase", MODE_CONFIGS[(int)mode].name);
+            // TODO: Adjust orientation
             break;
         case OperationMode::LEVEL:
             ESP_LOGI(TAG, "Level: Calibrate +");
             // TODO: Calibration adjustment
+            break;
+        case OperationMode::MOTOR_1:
+        case OperationMode::MOTOR_2:
+        case OperationMode::MOTOR_3:
+        case OperationMode::MOTOR_4:
+            ESP_LOGI(TAG, "%s: Forward", MODE_CONFIGS[(int)mode].name);
+            // TODO: Individual motor control
             break;
         default:
             break;
@@ -150,6 +264,7 @@ void handle_button_up_press() {
 }
 
 void handle_button_mode_press() {
+    reset_activity_timer();
     ESP_LOGI(TAG, "Button MODE pressed - cycling mode");
     ui.cycleMode();
     ui.refreshModePanel();
@@ -157,26 +272,31 @@ void handle_button_mode_press() {
 }
 
 void handle_button_down_press() {
+    reset_activity_timer();
     OperationMode mode = ui.getMode();
     ESP_LOGI(TAG, "Button DOWN pressed in mode %d", (int)mode);
 
     switch (mode) {
-        case OperationMode::MANUAL:
-            ESP_LOGI(TAG, "Manual: Move down");
-            // TODO: Motor control - move down
+        case OperationMode::UP_DOWN:
+            ESP_LOGI(TAG, "Up/Down: Move down");
+            // TODO: Motor control - move all down
             break;
-        case OperationMode::AUTO:
-            ESP_LOGI(TAG, "Auto: Decrease target");
-            // TODO: Adjust target position
-            break;
-        case OperationMode::PRESET_1:
-        case OperationMode::PRESET_2:
-            ESP_LOGI(TAG, "Preset: Load");
-            // TODO: Load position from preset
+        case OperationMode::ROLL:
+        case OperationMode::PITCH:
+        case OperationMode::TORSION:
+            ESP_LOGI(TAG, "%s: Decrease", MODE_CONFIGS[(int)mode].name);
+            // TODO: Adjust orientation
             break;
         case OperationMode::LEVEL:
             ESP_LOGI(TAG, "Level: Calibrate -");
             // TODO: Calibration adjustment
+            break;
+        case OperationMode::MOTOR_1:
+        case OperationMode::MOTOR_2:
+        case OperationMode::MOTOR_3:
+        case OperationMode::MOTOR_4:
+            ESP_LOGI(TAG, "%s: Reverse", MODE_CONFIGS[(int)mode].name);
+            // TODO: Individual motor control
             break;
         default:
             break;
@@ -248,6 +368,59 @@ void gpio_event_task(void *pvParameter) {
 }
 
 // ============================================================================
+// Inactivity Monitoring Task
+// ============================================================================
+void inactivity_monitor_task(void *pvParameter) {
+    ESP_LOGI(TAG, "Inactivity monitor task started");
+
+    // Log initial stack high water mark
+    UBaseType_t initial_stack = uxTaskGetStackHighWaterMark(NULL);
+    ESP_LOGI(TAG, "Inactivity task initial stack HWM: %u bytes", initial_stack);
+
+    while (1) {
+        // Check every second
+        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        int64_t idle_time_ms = get_idle_time_ms();
+        int64_t idle_time_sec = idle_time_ms / 1000;
+        int64_t dim_timeout_ms = AUTO_DIM_TIMEOUT_SEC * 1000;
+        int64_t sleep_timeout_ms = AUTO_SLEEP_TIMEOUT_SEC * 1000;
+
+        // Log stack usage periodically (every 5 seconds)
+        static int counter = 0;
+        if (++counter % 5 == 0) {
+            UBaseType_t stack_hwm = uxTaskGetStackHighWaterMark(NULL);
+            ESP_LOGI(TAG, "Idle: %lld s, Dimmed: %s, Stack HWM: %u bytes",
+                     idle_time_sec, is_dimmed ? "YES" : "NO", stack_hwm);
+        }
+
+        // Auto-dim after dim timeout (with fade)
+        if (!is_dimmed && idle_time_ms >= dim_timeout_ms) {
+            ESP_LOGI(TAG, "Dimming display after %d seconds of inactivity", AUTO_DIM_TIMEOUT_SEC);
+
+            // Fade from full to dimmed
+            for (int brightness = BACKLIGHT_FULL; brightness >= BACKLIGHT_DIMMED; brightness -= 4) {
+                display.setBrightness(brightness);
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+            display.setBrightness(BACKLIGHT_DIMMED);
+            is_dimmed = true;
+        }
+
+        // Auto-sleep after sleep timeout
+        if (idle_time_ms >= sleep_timeout_ms) {
+            ESP_LOGI(TAG, "Inactivity timeout reached (%lld ms), entering sleep mode",
+                     idle_time_ms);
+            UBaseType_t pre_sleep_stack = uxTaskGetStackHighWaterMark(NULL);
+            ESP_LOGI(TAG, "Pre-sleep stack HWM: %u bytes", pre_sleep_stack);
+
+            enter_deep_sleep();
+            // Will not return from deep sleep
+        }
+    }
+}
+
+// ============================================================================
 // Display Initialization
 // ============================================================================
 void init_display(void) {
@@ -267,7 +440,7 @@ void init_display(void) {
     // Initialize display
     display.init();
     display.setRotation(SCREEN_ROTATION);
-    display.setBrightness(128);
+    display.setBrightness(BACKLIGHT_FULL);
 
     ESP_LOGI(TAG, "Display initialized: %dx%d", display.width(), display.height());
 }
@@ -278,14 +451,45 @@ void init_display(void) {
 extern "C" void app_main(void) {
     ESP_LOGI(TAG, "BedLift Controller Starting...");
 
+    // Check wake-up reason
+    esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+    if (wakeup_reason == ESP_SLEEP_WAKEUP_GPIO) {
+        ESP_LOGI(TAG, "Woke up from deep sleep via GPIO");
+    } else {
+        ESP_LOGI(TAG, "Cold boot or reset");
+    }
+
+    // Check for dev mode activation (D1 and D2 held on boot)
+    // Configure pins temporarily to read state
+    gpio_set_direction((gpio_num_t)GPIO_BUTTON_MODE, GPIO_MODE_INPUT);
+    gpio_set_pull_mode((gpio_num_t)GPIO_BUTTON_MODE, GPIO_PULLDOWN_ONLY);
+    gpio_set_direction((gpio_num_t)GPIO_BUTTON_UP, GPIO_MODE_INPUT);
+    gpio_set_pull_mode((gpio_num_t)GPIO_BUTTON_UP, GPIO_PULLDOWN_ONLY);
+
+    vTaskDelay(pdMS_TO_TICKS(10));  // Short delay for pins to settle
+
+    bool d1_pressed = (gpio_get_level((gpio_num_t)GPIO_BUTTON_MODE) == 1);
+    bool d2_pressed = (gpio_get_level((gpio_num_t)GPIO_BUTTON_UP) == 1);
+
+    if (d1_pressed && d2_pressed) {
+        dev_flag = true;
+        ESP_LOGI(TAG, "*** DEV MODE ENABLED ***");
+    } else {
+        dev_flag = false;
+        ESP_LOGI(TAG, "Normal mode (dev modes hidden)");
+    }
+
+    // Initialize activity timer
+    reset_activity_timer();
+
     // Initialize display
     init_display();
 
     // Show startup animation
     show_startup_animation();
 
-    // Initialize UI
-    ui.init(&display);
+    // Initialize UI with dev flag
+    ui.init(&display, dev_flag);
 
     // Initial refresh
     ui.refresh();
@@ -296,5 +500,9 @@ extern "C" void app_main(void) {
     // Create GPIO event task
     xTaskCreate(gpio_event_task, "gpio_event", 4096, NULL, 5, NULL);
 
-    ESP_LOGI(TAG, "BedLift Controller Running");
+    // Create inactivity monitor task with larger stack for enter_deep_sleep()
+    xTaskCreate(inactivity_monitor_task, "inactivity", 4096, NULL, 3, NULL);
+
+    ESP_LOGI(TAG, "BedLift Controller Running (auto-sleep in %d seconds)",
+             AUTO_SLEEP_TIMEOUT_SEC);
 }

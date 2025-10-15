@@ -46,26 +46,3 @@
 #define BUTTON_UP_ACTIVE_LOW   false
 #define BUTTON_MODE_ACTIVE_LOW false
 #define BUTTON_DOWN_ACTIVE_LOW true
-
-// Display Configuration
-#define SCREEN_WIDTH  240
-#define SCREEN_HEIGHT 135
-#define SCREEN_ROTATION 3  // Landscape mode
-
-// UI Layout Constants
-#define STATUS_BAR_HEIGHT 16
-#define MODE_PANEL_WIDTH  70
-#define BUTTON_PANEL_WIDTH 50
-#define BUTTON_SPACING 0
-
-// Calculate derived dimensions
-#define CONTENT_AREA_WIDTH (SCREEN_WIDTH - BUTTON_PANEL_WIDTH)
-#define STATUS_BAR_WIDTH (CONTENT_AREA_WIDTH)
-#define MAIN_CONTENT_HEIGHT (SCREEN_HEIGHT - STATUS_BAR_HEIGHT)
-#define LEVEL_DISPLAY_WIDTH (CONTENT_AREA_WIDTH - MODE_PANEL_WIDTH)
-
-// ============================================================================
-// Timing Configuration
-// ============================================================================
-#define DEBOUNCE_DELAY_MS 50
-#define STARTUP_ANIMATION_FRAME_DELAY_MS 2

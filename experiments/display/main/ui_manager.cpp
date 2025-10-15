@@ -4,15 +4,19 @@
 
 static const char* TAG = "UIManager";
 
-UIManager::UIManager() : gfx(nullptr) {}
+UIManager::UIManager() : gfx(nullptr), dev_flag(false) {}
 
-void UIManager::init(LGFX* display) {
+void UIManager::init(LGFX* display, bool dev_flag_param) {
     gfx = display;
+    dev_flag = dev_flag_param;
     calculateLayout();
+
+    // Initialize monitor state with dev_flag
+    monitors.dev_mode = dev_flag_param;
 
     // Initialize all panels with their layout positions
     status_bar.init(gfx, layout.status_bar_x, layout.status_bar_y,
-                    layout.status_bar_w, layout.status_bar_h);
+                    layout.status_bar_w, layout.status_bar_h, &monitors);
 
     mode_panel.init(gfx, layout.mode_panel_x, layout.mode_panel_y,
                     layout.mode_panel_w, layout.mode_panel_h);
@@ -24,7 +28,7 @@ void UIManager::init(LGFX* display) {
                       layout.button_panel_w, layout.button_panel_h);
 
     // Set initial mode
-    setMode(OperationMode::MANUAL);
+    setMode(OperationMode::UP_DOWN);
 
     ESP_LOGI(TAG, "UI Manager initialized with layout:");
     ESP_LOGI(TAG, "  Status bar: (%d,%d) %dx%d", layout.status_bar_x, layout.status_bar_y,
@@ -81,24 +85,29 @@ OperationMode UIManager::getMode() const {
 }
 
 void UIManager::cycleMode() {
-    int next_mode = ((int)getMode() + 1) % (int)OperationMode::MODE_COUNT;
+    int current = (int)getMode();
+    int next_mode = current;
+
+    // Find next available mode (skip dev_only modes if dev_flag is false)
+    do {
+        next_mode = (next_mode + 1) % (int)OperationMode::MODE_COUNT;
+
+        // If we've cycled back to current mode, we're stuck (shouldn't happen)
+        if (next_mode == current) {
+            break;
+        }
+
+        // Check if this mode is available
+        if (!MODE_CONFIGS[next_mode].dev_only || dev_flag) {
+            break;  // Mode is available
+        }
+    } while (true);
+
     setMode((OperationMode)next_mode);
 }
 
 void UIManager::setButtonState(int button_index, bool pressed) {
     button_panel.setButtonState(button_index, pressed);
-}
-
-void UIManager::setBatteryLevel(int percent) {
-    status_bar.setBatteryLevel(percent);
-}
-
-void UIManager::setConnectionStatus(bool connected) {
-    status_bar.setConnectionStatus(connected);
-}
-
-void UIManager::setStatusMessage(const char* msg) {
-    status_bar.setMessage(msg);
 }
 
 void UIManager::setLevelAngle(float pitch, float roll) {

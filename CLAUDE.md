@@ -17,3 +17,4 @@ LVGL
 
 - User handles building and flashing (idf.py build, idf.py flash monitor)
 - Claude focuses on code implementation and debugging
+- Avoid summarizing changes unless you need to ask follow up questions

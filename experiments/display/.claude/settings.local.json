@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Code/bedlift-esp-idf/experiments/display-lvgl/main/**)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

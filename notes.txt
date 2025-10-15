@@ -1,0 +1,36 @@
+Free Icon Resources
+
+  1. Lucide Icons (Recommended)
+
+  - URL: https://lucide.dev
+  - Simple, consistent line icons
+  - Easy to convert to pixel art for small displays
+  - Open source (ISC license)
+
+  2. Feather Icons
+
+  - URL: https://feathericons.com
+  - Minimalist, 24x24 pixel icons
+  - Perfect for small displays
+  - MIT licensed
+
+  3. Material Symbols
+
+  - URL: https://fonts.google.com/icons
+  - Google's icon set
+  - Various styles (outlined, filled, rounded)
+  - Apache 2.0 license
+
+  4. Bootstrap Icons
+
+  - URL: https://icons.getbootstrap.com
+  - Over 1800 icons
+  - Clean, simple designs
+  - MIT licensed
+
+  5. Tabler Icons
+
+  - URL: https://tabler-icons.io
+  - 4000+ outlined icons
+  - Highly consistent style
+  - MIT licensed

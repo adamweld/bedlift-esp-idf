@@ -64,3 +64,13 @@
 // ============================================================================
 #define GPIO_I2C_SDA  3   // I2C Data
 #define GPIO_I2C_SCL  4   // I2C Clock
+#define I2C_FREQ_HZ   400000  // 400kHz Fast Mode
+
+// ============================================================================
+// Accelerometer Configuration
+// ============================================================================
+#define GPIO_ACC_FRONT_SDO  8   // Front accelerometer SDO/ALT ADDRESS pin (controls address)
+// Rear accelerometer SDO not connected (defaults to 0x53)
+
+#define I2C_ADDR_ACC_REAR   0x53  // Rear accelerometer (SDO floating/low)
+#define I2C_ADDR_ACC_FRONT  0x1D  // Front accelerometer (SDO high via GPIO)

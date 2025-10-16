@@ -7,16 +7,24 @@
 #include "esp_sleep.h"
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
+#include "driver/i2c.h"
 #include "lgfx_config.hpp"
 #include "pins.hpp"
 #include "config.hpp"
 #include "ui_manager.hpp"
+#include "i2c.hpp"
+#include "adxl345.hpp"
 
 static const char *TAG = "BedLift";
 
 // Global instances
 LGFX display;
 UIManager ui;
+
+// I2C and Accelerometer instances
+static std::shared_ptr<espp::I2c> i2c;
+static std::unique_ptr<espp::Adxl345> acc_front;
+static std::unique_ptr<espp::Adxl345> acc_rear;
 
 // GPIO event queue
 static QueueHandle_t gpio_event_queue = NULL;
@@ -209,6 +217,69 @@ void spin_motors(int direction) {
 }
 
 // ============================================================================
+// Accelerometer Initialization
+// ============================================================================
+void init_accelerometers(void) {
+    ESP_LOGI(TAG, "Initializing accelerometers");
+
+    // Initialize I2C bus
+    i2c = std::make_shared<espp::I2c>(espp::I2c::Config{
+        .port = I2C_NUM_0,
+        .sda_io_num = (gpio_num_t)GPIO_I2C_SDA,
+        .scl_io_num = (gpio_num_t)GPIO_I2C_SCL,
+        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+        .clk_speed = I2C_FREQ_HZ,
+    });
+
+    ESP_LOGI(TAG, "I2C initialized: SDA=%d, SCL=%d, Freq=%dHz",
+             GPIO_I2C_SDA, GPIO_I2C_SCL, I2C_FREQ_HZ);
+
+    // Small delay for accelerometers to power up
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    // Initialize rear accelerometer (address 0x53)
+    acc_rear = std::make_unique<espp::Adxl345>(espp::Adxl345::Config{
+        .device_address = I2C_ADDR_ACC_REAR,
+        .write = std::bind(&espp::I2c::write, i2c.get(), std::placeholders::_1, std::placeholders::_2, std::placeholders::_3),
+        .read = std::bind(&espp::I2c::read, i2c.get(), std::placeholders::_1, std::placeholders::_2, std::placeholders::_3),
+        .log_level = espp::Logger::Verbosity::WARN
+    });
+
+    // Initialize front accelerometer (address 0x1D)
+    acc_front = std::make_unique<espp::Adxl345>(espp::Adxl345::Config{
+        .device_address = I2C_ADDR_ACC_FRONT,
+        .write = std::bind(&espp::I2c::write, i2c.get(), std::placeholders::_1, std::placeholders::_2, std::placeholders::_3),
+        .read = std::bind(&espp::I2c::read, i2c.get(), std::placeholders::_1, std::placeholders::_2, std::placeholders::_3),
+        .log_level = espp::Logger::Verbosity::WARN
+    });
+
+    // Configure rear accelerometer
+    std::error_code ec_rear;
+    if (acc_rear->initialize(ec_rear)) {
+        acc_rear->set_range(espp::Adxl345::RANGE_4G, ec_rear);
+        acc_rear->set_data_rate(espp::Adxl345::RATE_100_HZ, ec_rear);
+        ESP_LOGI(TAG, "Rear accelerometer initialized (0x%02X)", I2C_ADDR_ACC_REAR);
+    } else {
+        ESP_LOGE(TAG, "Failed to initialize rear accelerometer: %s", ec_rear.message().c_str());
+    }
+
+    // Configure front accelerometer
+    std::error_code ec_front;
+    if (acc_front->initialize(ec_front)) {
+        acc_front->set_range(espp::Adxl345::RANGE_4G, ec_front);
+        acc_front->set_data_rate(espp::Adxl345::RATE_100_HZ, ec_front);
+        ESP_LOGI(TAG, "Front accelerometer initialized (0x%02X)", I2C_ADDR_ACC_FRONT);
+    } else {
+        ESP_LOGE(TAG, "Failed to initialize front accelerometer: %s", ec_front.message().c_str());
+    }
+
+    // Update sensor monitor state
+    ui.getMonitors().sensors = true;
+    ui.refreshStatusBar();
+}
+
+// ============================================================================
 // GPIO Pin Initialization
 // ============================================================================
 void init_gpio_pins(void) {
@@ -239,6 +310,18 @@ void init_gpio_pins(void) {
     // Keep lock power off initially
     gpio_set_level((gpio_num_t)GPIO_LOCK_POWER, 0);
     ESP_LOGI(TAG, "Lock power disabled (GPIO %d)", GPIO_LOCK_POWER);
+
+    // Configure front accelerometer SDO pin (GPIO 8) - set HIGH for address 0x1D
+    gpio_config_t acc_front_sdo_conf = {};
+    acc_front_sdo_conf.intr_type = GPIO_INTR_DISABLE;
+    acc_front_sdo_conf.mode = GPIO_MODE_OUTPUT;
+    acc_front_sdo_conf.pin_bit_mask = (1ULL << GPIO_ACC_FRONT_SDO);
+    acc_front_sdo_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    acc_front_sdo_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    gpio_config(&acc_front_sdo_conf);
+    gpio_set_level((gpio_num_t)GPIO_ACC_FRONT_SDO, 1);  // Set HIGH for address 0x1D
+    ESP_LOGI(TAG, "Front accelerometer SDO set HIGH (GPIO %d) - address 0x%02X",
+             GPIO_ACC_FRONT_SDO, I2C_ADDR_ACC_FRONT);
 
     // Update monitor states to reflect hardware
     ui.getMonitors().motors = true;   // Motor power is on
@@ -488,6 +571,83 @@ void gpio_event_task(void *pvParameter) {
 }
 
 // ============================================================================
+// Accelerometer Reading Task
+// ============================================================================
+void accelerometer_task(void *pvParameter) {
+    ESP_LOGI(TAG, "Accelerometer task started");
+
+    float front_x, front_y, front_z;
+    float rear_x, rear_y, rear_z;
+
+    while (1) {
+        // Read both accelerometers
+        bool front_ok = false;
+        bool rear_ok = false;
+
+        if (acc_front) {
+            std::error_code ec;
+            auto front_data = acc_front->read(ec);
+            if (!ec) {
+                front_x = front_data.x;
+                front_y = front_data.y;
+                front_z = front_data.z;
+                front_ok = true;
+            }
+        }
+
+        if (acc_rear) {
+            std::error_code ec;
+            auto rear_data = acc_rear->read(ec);
+            if (!ec) {
+                rear_x = rear_data.x;
+                rear_y = rear_data.y;
+                rear_z = rear_data.z;
+                rear_ok = true;
+            }
+        }
+
+        // Update sensor monitor state
+        ui.getMonitors().sensors = (front_ok && rear_ok);
+
+        // Calculate pitch and roll from accelerometer data
+        // Using rear accelerometer for now (TODO: combine both sensors)
+        if (rear_ok) {
+            // Calculate pitch (rotation around X-axis): atan2(y, z)
+            float pitch = atan2f(rear_y, rear_z) * 180.0f / M_PI;
+
+            // Calculate roll (rotation around Y-axis): atan2(x, z)
+            float roll = atan2f(rear_x, rear_z) * 180.0f / M_PI;
+
+            // Update UI with orientation data
+            ui.setLevelAngle(pitch, roll);
+
+            // Log periodically (every 2 seconds)
+            static int log_counter = 0;
+            if (++log_counter >= 20) {  // 20 * 100ms = 2s
+                log_counter = 0;
+                ESP_LOGI(TAG, "Rear: X=%.2fg Y=%.2fg Z=%.2fg, Pitch=%.1f° Roll=%.1f°",
+                         rear_x, rear_y, rear_z, pitch, roll);
+                if (front_ok) {
+                    ESP_LOGI(TAG, "Front: X=%.2fg Y=%.2fg Z=%.2fg",
+                             front_x, front_y, front_z);
+                }
+            }
+        }
+
+        // Update status bar if sensor state changed
+        static bool last_sensor_state = false;
+        bool current_sensor_state = ui.getMonitors().sensors;
+        if (current_sensor_state != last_sensor_state) {
+            last_sensor_state = current_sensor_state;
+            ui.refreshStatusBar();
+        }
+
+        // Read at 10 Hz (every 100ms)
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+// ============================================================================
 // Inactivity Monitoring Task
 // ============================================================================
 void inactivity_monitor_task(void *pvParameter) {
@@ -611,10 +771,13 @@ extern "C" void app_main(void) {
     // Initialize UI with dev flag
     ui.init(&display, dev_flag);
 
-    // Initialize GPIO pins (power switches)
+    // Initialize GPIO pins (power switches and accelerometer address)
     init_gpio_pins();
 
-    // Initial refresh (will show motor/lock monitor states)
+    // Initialize accelerometers (I2C and sensors)
+    init_accelerometers();
+
+    // Initial refresh (will show motor/lock/sensor monitor states)
     ui.refresh();
 
     // Initialize GPIO buttons
@@ -622,6 +785,9 @@ extern "C" void app_main(void) {
 
     // Create GPIO event task
     xTaskCreate(gpio_event_task, "gpio_event", 4096, NULL, 5, NULL);
+
+    // Create accelerometer reading task
+    xTaskCreate(accelerometer_task, "accelerometer", 4096, NULL, 4, NULL);
 
     // Create inactivity monitor task with larger stack for enter_deep_sleep()
     xTaskCreate(inactivity_monitor_task, "inactivity", 4096, NULL, 3, NULL);

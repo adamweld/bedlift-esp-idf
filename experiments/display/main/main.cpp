@@ -179,6 +179,73 @@ void show_startup_animation(void) {
 }
 
 // ============================================================================
+// Power Control Functions
+// ============================================================================
+void lock_solenoids(void) {
+    ESP_LOGI(TAG, "Locking solenoids - enabling lock power");
+    gpio_set_level((gpio_num_t)GPIO_LOCK_POWER, 1);
+    ui.getMonitors().lock = true;
+    ui.refreshStatusBar();
+}
+
+void unlock_solenoids(void) {
+    ESP_LOGI(TAG, "Unlocking solenoids - disabling lock power");
+    gpio_set_level((gpio_num_t)GPIO_LOCK_POWER, 0);
+    ui.getMonitors().lock = false;
+    ui.refreshStatusBar();
+}
+
+// ============================================================================
+// Motor Control Functions
+// ============================================================================
+void spin_motors(int direction) {
+    // Stub function for motor control
+    // direction: 1 = up/forward, -1 = down/reverse, 0 = stop
+    // TODO: Implement CAN bus motor commands
+    static int call_count = 0;
+    if (++call_count % 10 == 0) {  // Log every 10th call to avoid spam
+        ESP_LOGI(TAG, "spin_motors: direction=%d", direction);
+    }
+}
+
+// ============================================================================
+// GPIO Pin Initialization
+// ============================================================================
+void init_gpio_pins(void) {
+    ESP_LOGI(TAG, "Initializing GPIO pins");
+
+    // Configure motor power load switch (GPIO 5) - output, active high
+    gpio_config_t motor_power_conf = {};
+    motor_power_conf.intr_type = GPIO_INTR_DISABLE;
+    motor_power_conf.mode = GPIO_MODE_OUTPUT;
+    motor_power_conf.pin_bit_mask = (1ULL << GPIO_MOTOR_POWER);
+    motor_power_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    motor_power_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    gpio_config(&motor_power_conf);
+
+    // Configure lock power load switch (GPIO 6) - output, active high
+    gpio_config_t lock_power_conf = {};
+    lock_power_conf.intr_type = GPIO_INTR_DISABLE;
+    lock_power_conf.mode = GPIO_MODE_OUTPUT;
+    lock_power_conf.pin_bit_mask = (1ULL << GPIO_LOCK_POWER);
+    lock_power_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    lock_power_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    gpio_config(&lock_power_conf);
+
+    // Enable motor power on startup
+    gpio_set_level((gpio_num_t)GPIO_MOTOR_POWER, 1);
+    ESP_LOGI(TAG, "Motor power enabled (GPIO %d)", GPIO_MOTOR_POWER);
+
+    // Keep lock power off initially
+    gpio_set_level((gpio_num_t)GPIO_LOCK_POWER, 0);
+    ESP_LOGI(TAG, "Lock power disabled (GPIO %d)", GPIO_LOCK_POWER);
+
+    // Update monitor states to reflect hardware
+    ui.getMonitors().motors = true;   // Motor power is on
+    ui.getMonitors().lock = false;    // Lock power is off
+}
+
+// ============================================================================
 // GPIO Interrupt Handling
 // ============================================================================
 static void IRAM_ATTR gpio_isr_handler(void* arg) {
@@ -238,8 +305,9 @@ void handle_button_up_press() {
 
     switch (mode) {
         case OperationMode::UP_DOWN:
-            ESP_LOGI(TAG, "Up/Down: Move up");
-            // TODO: Motor control - move all up
+            ESP_LOGI(TAG, "Up/Down: Move up - unlocking and starting motors");
+            unlock_solenoids();
+            vTaskDelay(pdMS_TO_TICKS(100));  // Brief delay for locks to release
             break;
         case OperationMode::ROLL:
         case OperationMode::PITCH:
@@ -263,6 +331,23 @@ void handle_button_up_press() {
     }
 }
 
+void handle_button_up_release() {
+    reset_activity_timer();
+    OperationMode mode = ui.getMode();
+    ESP_LOGI(TAG, "Button UP released in mode %d", (int)mode);
+
+    switch (mode) {
+        case OperationMode::UP_DOWN:
+            ESP_LOGI(TAG, "Up/Down: Stop motors and lock");
+            spin_motors(0);  // Stop motors
+            vTaskDelay(pdMS_TO_TICKS(50));  // Brief delay for motors to stop
+            lock_solenoids();
+            break;
+        default:
+            break;
+    }
+}
+
 void handle_button_mode_press() {
     reset_activity_timer();
     ESP_LOGI(TAG, "Button MODE pressed - cycling mode");
@@ -278,8 +363,9 @@ void handle_button_down_press() {
 
     switch (mode) {
         case OperationMode::UP_DOWN:
-            ESP_LOGI(TAG, "Up/Down: Move down");
-            // TODO: Motor control - move all down
+            ESP_LOGI(TAG, "Up/Down: Move down - unlocking and starting motors");
+            unlock_solenoids();
+            vTaskDelay(pdMS_TO_TICKS(100));  // Brief delay for locks to release
             break;
         case OperationMode::ROLL:
         case OperationMode::PITCH:
@@ -297,6 +383,23 @@ void handle_button_down_press() {
         case OperationMode::MOTOR_4:
             ESP_LOGI(TAG, "%s: Reverse", MODE_CONFIGS[(int)mode].name);
             // TODO: Individual motor control
+            break;
+        default:
+            break;
+    }
+}
+
+void handle_button_down_release() {
+    reset_activity_timer();
+    OperationMode mode = ui.getMode();
+    ESP_LOGI(TAG, "Button DOWN released in mode %d", (int)mode);
+
+    switch (mode) {
+        case OperationMode::UP_DOWN:
+            ESP_LOGI(TAG, "Up/Down: Stop motors and lock");
+            spin_motors(0);  // Stop motors
+            vTaskDelay(pdMS_TO_TICKS(50));  // Brief delay for motors to stop
+            lock_solenoids();
             break;
         default:
             break;
@@ -323,8 +426,11 @@ void gpio_event_task(void *pvParameter) {
     ui.setButtonState(1, last_mode_state);
     ui.setButtonState(2, last_down_state);
 
+    const TickType_t motor_spin_period = pdMS_TO_TICKS(50);  // Spin motors every 50ms while held
+
     while (1) {
-        if (xQueueReceive(gpio_event_queue, &gpio_num, portMAX_DELAY)) {
+        // Wait for button event with timeout to allow continuous motor spinning
+        if (xQueueReceive(gpio_event_queue, &gpio_num, motor_spin_period)) {
             // Debounce delay
             vTaskDelay(pdMS_TO_TICKS(DEBOUNCE_DELAY_MS));
 
@@ -340,6 +446,8 @@ void gpio_event_task(void *pvParameter) {
                     ui.refreshButtonPanel();
                     if (pressed) {
                         handle_button_up_press();
+                    } else {
+                        handle_button_up_release();
                     }
                 }
             } else if (gpio_num == GPIO_BUTTON_MODE) {
@@ -360,8 +468,20 @@ void gpio_event_task(void *pvParameter) {
                     ui.refreshButtonPanel();
                     if (pressed) {
                         handle_button_down_press();
+                    } else {
+                        handle_button_down_release();
                     }
                 }
+            }
+        }
+
+        // Continuously spin motors while buttons are held in UP_DOWN mode
+        OperationMode mode = ui.getMode();
+        if (mode == OperationMode::UP_DOWN) {
+            if (last_up_state) {
+                spin_motors(1);  // Spin up
+            } else if (last_down_state) {
+                spin_motors(-1);  // Spin down
             }
         }
     }
@@ -491,7 +611,10 @@ extern "C" void app_main(void) {
     // Initialize UI with dev flag
     ui.init(&display, dev_flag);
 
-    // Initial refresh
+    // Initialize GPIO pins (power switches)
+    init_gpio_pins();
+
+    // Initial refresh (will show motor/lock monitor states)
     ui.refresh();
 
     // Initialize GPIO buttons

@@ -46,3 +46,21 @@
 #define BUTTON_UP_ACTIVE_LOW   false
 #define BUTTON_MODE_ACTIVE_LOW false
 #define BUTTON_DOWN_ACTIVE_LOW true
+
+// ============================================================================
+// Power Control - Load Switches
+// ============================================================================
+#define GPIO_MOTOR_POWER  5  // Load switch for motor power (active high)
+#define GPIO_LOCK_POWER   6  // Load switch for lock power (active high)
+
+// ============================================================================
+// CAN Transceiver
+// ============================================================================
+#define GPIO_CAN_TX  38  // CAN TX
+#define GPIO_CAN_RX  39  // CAN RX
+
+// ============================================================================
+// I2C Bus
+// ============================================================================
+#define GPIO_I2C_SDA  3   // I2C Data
+#define GPIO_I2C_SCL  4   // I2C Clock

@@ -507,103 +507,194 @@ static int cmd_can(int argc, char **argv)
 // ---------------------------------------------------------------------------
 // cg — minimal CyberGear liveness (frame layout per bedlift lib/cybergear)
 // ---------------------------------------------------------------------------
+#include "cybergear.h"
+
 #define CG_MASTER_ID 0x00
-#define CG_CMD_GET_ID  0x00
-#define CG_CMD_ENABLE  0x03
-#define CG_CMD_RESET   0x04
-#define CG_CMD_RAM_WR  0x12
-#define CG_ADDR_RUN_MODE      0x7005
-#define CG_ADDR_SPEED_REF     0x700A
-#define CG_ADDR_LIMIT_CURRENT 0x7018
-#define CG_RUN_MODE_SPEED 2
 #define CG_DEFAULT_LIMIT_A 4.0f   // gentle default; motor max is 27A
 
-static int cg_send_data(uint8_t cmd, uint8_t motor_id, const uint8_t *data)
+// Motor objects from the PRODUCTION fork, addressed by raw CAN id (1..4).
+static cybergear_motor_t s_cg[8];
+static bool s_cg_init[8];
+
+static cybergear_motor_t *cg_motor(uint8_t id)
 {
-    twai_message_t m = { 0 };
-    m.extd = 1;
-    m.identifier = (uint32_t)cmd << 24 | (uint32_t)CG_MASTER_ID << 8 | motor_id;
-    m.data_length_code = 8;
-    if (data) memcpy(m.data, data, 8);
-    esp_err_t err = twai_transmit(&m, pdMS_TO_TICKS(500));
-    if (err != ESP_OK) { printf("tx failed: %s\n", esp_err_to_name(err)); return -1; }
-    return 0;
+    if (id < 1 || id > 7) return NULL;
+    if (!s_cg_init[id]) {
+        cybergear_init(&s_cg[id], CG_MASTER_ID, id, pdMS_TO_TICKS(50));
+        s_cg_init[id] = true;
+    }
+    return &s_cg[id];
 }
 
-static int cg_send(uint8_t cmd, uint8_t motor_id)
+static esp_err_t cg_tw_send(const twai_message_t *msg, TickType_t ticks, void *ctx)
 {
-    return cg_send_data(cmd, motor_id, NULL);
+    (void)ctx;
+    twai_message_t m = *msg;
+    return twai_transmit(&m, ticks);
 }
 
-static int cg_ram_write_f32(uint8_t motor_id, uint16_t addr, float value)
+// Drain RX for up to `ms`, offering every frame to every known motor object.
+static int cg_drain(int ms)
 {
-    uint8_t d[8] = { addr & 0xFF, addr >> 8, 0, 0 };
-    memcpy(&d[4], &value, 4);
-    return cg_send_data(CG_CMD_RAM_WR, motor_id, d);
+    int n = 0;
+    int64_t end = esp_timer_get_time() + (int64_t)ms * 1000;
+    twai_message_t m;
+    while (esp_timer_get_time() < end) {
+        if (twai_receive(&m, pdMS_TO_TICKS(10)) != ESP_OK) continue;
+        n++;
+        for (int id = 1; id < 8; id++)
+            if (s_cg_init[id] &&
+                cybergear_process_message(&s_cg[id], &m,
+                                          esp_timer_get_time()) != ESP_ERR_NOT_FOUND)
+                break;
+    }
+    return n;
 }
 
-static int cg_ram_write_u8(uint8_t motor_id, uint16_t addr, uint8_t value)
+// Frame tap: log every driver TX/RX frame the driver actually handles.
+static void cg_frame_tap(int dir, const twai_message_t *m)
 {
-    uint8_t d[8] = { addr & 0xFF, addr >> 8, 0, 0, value };
-    return cg_send_data(CG_CMD_RAM_WR, motor_id, d);
+    printf("  %s id=0x%08lX [", dir ? "RX" : "TX", (unsigned long)m->identifier);
+    for (int i = 0; i < m->data_length_code; i++)
+        printf("%s%02X", i ? " " : "", m->data[i]);
+    printf("]\n");
 }
+static bool s_tap_on = false;
 
 static int cmd_cg(int argc, char **argv)
 {
+    if (argc >= 2 && !strcmp(argv[1], "tap")) {
+        s_tap_on = !(argc >= 3 && !strcmp(argv[2], "off"));
+        cybergear_set_frame_tap(s_tap_on ? cg_frame_tap : NULL);
+        printf("frame tap %s\n", s_tap_on ? "ON" : "off");
+        return 0;
+    }
     if (argc < 3) {
-        printf("usage: cg ping|init|vel|stop ...\n"
-               "  cg ping <id>            liveness check\n"
+        printf("usage: cg <sub> <id> ... (production fork driver)\n"
+               "  cg tap [off]           log every driver TX/RX frame\n"
+               "  cg ping <id>            type-0 liveness + MCU uid\n"
                "  cg init <id> [limitA]   speed mode + current limit + enable\n"
                "  cg vel  <id> <rad/s>    set speed (init first)\n"
-               "  cg stop <id>            reset/disable (also zeroes speed)\n");
+               "  cg stop <id>            reset/disable (zeroes speed)\n"
+               "  cg clear <id>           clear-fault (type 4, byte0=1)  [A4]\n"
+               "  cg vbus <id> [n]        param-read VBUS n times (0x701C) [A2]\n"
+               "  cg pos  <id>            mech_pos/rotation/mech_vel/iqf  [B2]\n"
+               "  cg stat <id>            last echo status + fault bits\n");
         return 1;
     }
     if (!s_can_up) { printf("`can up` first\n"); return 1; }
     uint8_t id = strtoul(argv[2], NULL, 0);
+    cybergear_motor_t *m = cg_motor(id);
+    if (!m) { printf("bad id\n"); return 1; }
 
     if (!strcmp(argv[1], "stop")) {
-        cg_ram_write_f32(id, CG_ADDR_SPEED_REF, 0.0f);
-        if (cg_send(CG_CMD_RESET, id)) return 1;
+        cybergear_set_speed(m, 0.0f);
+        if (cybergear_stop(m) != ESP_OK) return 1;
+        cg_drain(50);
         printf("reset/stop sent to motor %u\n", id);
+        return 0;
+    }
+    if (!strcmp(argv[1], "clear")) {
+        if (cybergear_clear_fault(m) != ESP_OK) return 1;
+        cg_drain(100);
+        printf("clear-fault sent to motor %u; faults now 0x%08lX\n",
+               id, (unsigned long)cybergear_get_faults(m));
         return 0;
     }
     if (!strcmp(argv[1], "init")) {
         float lim = (argc > 3) ? atof(argv[3]) : CG_DEFAULT_LIMIT_A;
         if (lim > 10.0f) { printf("limit capped at 10A for bring-up\n"); lim = 10.0f; }
-        if (cg_ram_write_u8(id, CG_ADDR_RUN_MODE, CG_RUN_MODE_SPEED)) return 1;
+        cybergear_stop(m);
         vTaskDelay(pdMS_TO_TICKS(10));
-        if (cg_ram_write_f32(id, CG_ADDR_LIMIT_CURRENT, lim)) return 1;
+        cybergear_set_mode(m, CYBERGEAR_MODE_SPEED);
         vTaskDelay(pdMS_TO_TICKS(10));
-        if (cg_ram_write_f32(id, CG_ADDR_SPEED_REF, 0.0f)) return 1;
+        cybergear_set_limit_current(m, lim);
         vTaskDelay(pdMS_TO_TICKS(10));
-        if (cg_send(CG_CMD_ENABLE, id)) return 1;
-        printf("motor %u: speed mode, %.1fA limit, enabled at 0 rad/s\n", id, lim);
+        cybergear_set_speed(m, 0.0f);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        if (cybergear_enable(m) != ESP_OK) return 1;
+        cg_drain(100);
+        printf("motor %u: speed mode, %.1fA limit, enabled; state=%d\n",
+               id, lim, m->status.state);
         return 0;
     }
     if (!strcmp(argv[1], "vel")) {
         if (argc < 4) { printf("usage: cg vel <id> <rad/s>\n"); return 1; }
         float v = atof(argv[3]);
         if (v > 10.0f) v = 10.0f;
-        if (v < -10.0f) v = -10.0f;   // old fw used 10 rad/s max
-        if (cg_ram_write_f32(id, CG_ADDR_SPEED_REF, v)) return 1;
-        printf("motor %u speed ref -> %.2f rad/s\n", id, v);
+        if (v < -10.0f) v = -10.0f;
+        if (cybergear_set_speed(m, v) != ESP_OK) return 1;
+        cg_drain(50);
+        printf("motor %u speed ref -> %.2f (echo: v=%+.2f T=%.1fC)\n",
+               id, v, m->status.speed, m->status.temperature);
         return 0;
     }
     if (!strcmp(argv[1], "ping")) {
-        if (cg_send(CG_CMD_GET_ID, id)) return 1;
-        twai_message_t m;
-        int64_t end = esp_timer_get_time() + 500000;
-        while (esp_timer_get_time() < end) {
-            if (twai_receive(&m, pdMS_TO_TICKS(50)) != ESP_OK) continue;
-            printf("motor %u alive: reply id=0x%08lX [", id,
-                   (unsigned long)m.identifier);
-            for (int i = 0; i < m.data_length_code; i++)
-                printf("%s%02X", i ? " " : "", m.data[i]);
-            printf("]\n");
+        int64_t before = m->ping_rx_us;
+        if (cybergear_ping(m) != ESP_OK) return 1;
+        cg_drain(300);
+        if (m->ping_rx_us != before) {
+            printf("motor %u alive, mcu uid %016llX\n", id,
+                   (unsigned long long)m->mcu_uid);
             return 0;
         }
         printf("no reply from motor %u (check 24V, MOTOR_EN, termination, id)\n", id);
         return 1;
+    }
+    if (!strcmp(argv[1], "vbus")) {
+        int n = (argc > 3) ? atoi(argv[3]) : 1;
+        if (n < 1) n = 1;
+        if (n > 1000) n = 1000;
+        int ok = 0;
+        float vmin = 1e9f, vmax = -1e9f;
+        for (int i = 0; i < n; i++) {
+            if (cybergear_get_param(m, CG_ADDR_VBUS) != ESP_OK) continue;
+            cg_drain(60);
+            if (m->params.updated && m->params.last_index == CG_ADDR_VBUS) {
+                ok++;
+                if (m->params.vbus < vmin) vmin = m->params.vbus;
+                if (m->params.vbus > vmax) vmax = m->params.vbus;
+            }
+        }
+        if (ok)
+            printf("VBUS motor %u: %.2fV (%d/%d replies, min %.2f max %.2f)\n",
+                   id, m->params.vbus, ok, n, vmin, vmax);
+        else
+            printf("VBUS motor %u: NO REPLY (0/%d) — param-read path failed\n",
+                   id, n);
+        return ok ? 0 : 1;
+    }
+    if (!strcmp(argv[1], "pos")) {
+        static const struct { uint16_t addr; const char *name; } regs[] = {
+            { CG_ADDR_MECH_POS, "mech_pos" }, { CG_ADDR_ROTATION, "rotation" },
+            { CG_ADDR_MECH_VEL, "mech_vel" }, { CG_ADDR_IQF, "iqf" },
+        };
+        for (unsigned i = 0; i < sizeof(regs) / sizeof(regs[0]); i++) {
+            if (cybergear_get_param(m, regs[i].addr) != ESP_OK) return 1;
+            cg_drain(60);
+            if (!(m->params.updated && m->params.last_index == regs[i].addr)) {
+                printf("  %s: no reply\n", regs[i].name);
+                continue;
+            }
+            if (regs[i].addr == CG_ADDR_ROTATION)
+                printf("  %-8s = %d turns\n", regs[i].name, m->params.rotation);
+            else
+                printf("  %-8s = %+.4f\n", regs[i].name,
+                       regs[i].addr == CG_ADDR_MECH_POS ? m->params.mech_pos :
+                       regs[i].addr == CG_ADDR_MECH_VEL ? m->params.mech_vel :
+                                                          m->params.iqf);
+        }
+        return 0;
+    }
+    if (!strcmp(argv[1], "stat")) {
+        cg_drain(50);
+        printf("motor %u: state=%d pos=%+.3f v=%+.3f T=%+.2fNm temp=%.1fC "
+               "faults=0x%08lX (age %lld ms)\n",
+               id, m->status.state, m->status.position, m->status.speed,
+               m->status.torque, m->status.temperature,
+               (unsigned long)cybergear_get_faults(m),
+               (long long)((esp_timer_get_time() - m->status.last_rx_us) / 1000));
+        return 0;
     }
     printf("unknown subcommand '%s'\n", argv[1]);
     return 1;
@@ -717,6 +808,7 @@ static void register_commands(void)
 void app_main(void)
 {
     gpio_init_safe();
+    cybergear_set_transport(cg_tw_send, NULL);
     esp_log_level_set("i2c.master", ESP_LOG_NONE);  // probe misses are expected during scans
     ESP_LOGI(TAG, "bedlift bring-up console — MOTOR_EN/LOCK_EN forced low");
 

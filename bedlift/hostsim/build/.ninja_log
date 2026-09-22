@@ -46,3 +46,13 @@
 3	17	1790112054766679052	/Users/weld/code/bedlift-esp-idf/bedlift/hostsim/build/CMakeFiles/cmake.verify_globs	66e5e7d1e03e449c
 21	878	1790112054785070351	CMakeFiles/hostsim.dir/main.cpp.o	32a3dec5ea6602b8
 878	1045	1790112055642052527	hostsim	675477d441823c6e
+2	17	1790112385532707171	/Users/weld/code/bedlift-esp-idf/bedlift/hostsim/build/CMakeFiles/cmake.verify_globs	66e5e7d1e03e449c
+27	809	1790112385557857466	CMakeFiles/hostsim.dir/Users/weld/code/bedlift-esp-idf/bedlift/components/ui/ui_panels.cpp.o	a62e6f864dbc2c90
+26	841	1790112385557458711	CMakeFiles/hostsim.dir/main.cpp.o	32a3dec5ea6602b8
+841	985	1790112386372491604	hostsim	675477d441823c6e
+1	15	1790112424665541157	/Users/weld/code/bedlift-esp-idf/bedlift/hostsim/build/CMakeFiles/cmake.verify_globs	66e5e7d1e03e449c
+18	832	1790112424682930445	CMakeFiles/hostsim.dir/main.cpp.o	32a3dec5ea6602b8
+832	937	1790112425496664322	hostsim	675477d441823c6e
+3	17	1790112452955591803	/Users/weld/code/bedlift-esp-idf/bedlift/hostsim/build/CMakeFiles/cmake.verify_globs	66e5e7d1e03e449c
+20	824	1790112452973007466	CMakeFiles/hostsim.dir/Users/weld/code/bedlift-esp-idf/bedlift/components/ui/ui_panels.cpp.o	a62e6f864dbc2c90
+825	986	1790112453777438276	hostsim	675477d441823c6e

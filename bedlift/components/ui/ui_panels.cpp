@@ -165,12 +165,7 @@ static void draw_mode(LGFX_Sprite &fb, const sys_snapshot_t &s)
     float f = s.sol_budget_frac < 0 ? 0 : s.sol_budget_frac > 1 ? 1 : s.sol_budget_frac;
     uint16_t bc = f > 0.4f ? COL_OK(fb) : (f > 0.15f ? COL_WARN(fb) : COL_ERR(fb));
     fb.fillRect(px + 7, UI_H - 11, (int)((bw - 2) * f), 4, bc);
-    if (s.sol_cooldown_s > 0) {
-        fb.setTextColor(COL_WARN(fb));
-        char buf[12];
-        snprintf(buf, sizeof(buf), "%lus", (unsigned long)s.sol_cooldown_s);
-        fb.drawString(buf, cx, UI_H - 20);
-    }
+    // cooldown countdown lives in the bottom warning banner
 }
 
 // ---------------------------------------------------------------------------
@@ -329,6 +324,69 @@ static void draw_debug_table(LGFX_Sprite &fb, const sys_snapshot_t &s)
     }
 }
 
+// Bottom banner: warnings and non-emergency errors, spelled out. Cycles when
+// several are active. Emergencies (MOTION_FAULT) use the full fault screen.
+static void draw_warning_banner(LGFX_Sprite &fb, const sys_snapshot_t &s)
+{
+    char msgs[6][30];
+    int n = 0;
+
+    if (s.safety_flags & SAFE_F_UNDERVOLT) {
+        float v = 0;
+        for (int i = 0; i < SYS_NUM_MOTORS; i++)
+            if (s.motor[i].vbus_v > v) v = s.motor[i].vbus_v;
+        snprintf(msgs[n++], 30, "24V LOW: %.1fV", v);
+    }
+    if (s.safety_flags & SAFE_F_RACKING) {
+        float rack = s.tilt_front.roll_deg - s.tilt_rear.roll_deg;
+        snprintf(msgs[n++], 30, "FRAME RACKED %+.1f deg", rack);
+    }
+    if (s.safety_flags & SAFE_F_MOTOR_FAULT) {
+        int m = 0;
+        for (int i = 0; i < SYS_NUM_MOTORS; i++)
+            if (s.motor[i].faults) { m = i + 1; break; }
+        snprintf(msgs[n++], 30, "MOTOR M%d FAULT", m);
+    }
+    if (s.safety_flags & SAFE_F_THERMAL) {
+        float tmax = 0;
+        for (int i = 0; i < SYS_NUM_MOTORS; i++)
+            if (s.motor[i].temp_c > tmax) tmax = s.motor[i].temp_c;
+        snprintf(msgs[n++], 30, "MOTOR HOT %.0fC", tmax);
+    }
+    if (s.safety_flags & SAFE_F_DESYNC)
+        snprintf(msgs[n++], 30, "CORNER OUT OF SYNC");
+    if (s.safety_flags & SAFE_F_TILT_FAIL)
+        snprintf(msgs[n++], 30, "TILT SENSOR FAULT");
+    if (s.safety_flags & SAFE_F_OVERTRAVEL)
+        snprintf(msgs[n++], 30, "AT TRAVEL LIMIT");
+    if ((s.safety_flags & SAFE_F_SOL_DUTY) || s.sol_cooldown_s > 0)
+        snprintf(msgs[n++], 30, "LOCKS COOLING %lus",
+                 (unsigned long)s.sol_cooldown_s);
+
+    if (n == 0) return;
+
+    const int bh = 14;
+    const int bw = UI_W - UI_BTN_W;
+    fb.fillRect(0, UI_H - bh, bw, bh, C(fb, 82, 60, 14));
+    fb.drawFastHLine(0, UI_H - bh, bw, COL_WARN(fb));
+
+    int idx = (int)((s.now_us / 1500000) % n);
+    fb.setTextSize(1);
+    fb.setTextDatum(lgfx::middle_left);
+    fb.setTextColor(C(fb, 250, 214, 140));
+    fb.drawString(msgs[idx], 5, UI_H - bh / 2);
+    if (n > 1) {
+        char cnt[16];
+        // single digits by construction (max 6 messages); % keeps GCC's
+        // format-truncation analysis happy on the target build
+        snprintf(cnt, sizeof(cnt), "%u/%u",
+                 (unsigned)(idx + 1) % 10, (unsigned)n % 10);
+        fb.setTextDatum(lgfx::middle_right);
+        fb.setTextColor(C(fb, 190, 160, 100));
+        fb.drawString(cnt, bw - 4, UI_H - bh / 2);
+    }
+}
+
 void ui_render(LGFX_Sprite &fb, const sys_snapshot_t &s)
 {
     fb.fillScreen(COL_BG(fb));
@@ -343,4 +401,6 @@ void ui_render(LGFX_Sprite &fb, const sys_snapshot_t &s)
     else
         draw_level(fb, s);
     draw_buttons(fb, s);
+    if (s.motion != MOTION_FAULT)
+        draw_warning_banner(fb, s);
 }

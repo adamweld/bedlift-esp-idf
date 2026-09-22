@@ -604,6 +604,15 @@ static void snap_all(const char *dir)
     s.tilt_front = { 2.0f, 8.0f, true, 900000 };
     s.tilt_rear = { 2.0f, -4.0f, true, 900000 };
     shoot("racking_warn");
+
+    // warning banner cycling (3 active)
+    s.safety_flags = SAFE_F_RACKING | SAFE_F_THERMAL;
+    s.sol_cooldown_s = 42;
+    s.motor[2].temp_c = 74.0f;
+    s.now_us = 1000000;          // -> first message
+    shoot("banner_1");
+    s.now_us = 2600000;          // -> second message + cycle counter
+    shoot("banner_2");
 }
 
 // ---- headless leveling experiment: ./hostsim --test-level ------------------

@@ -56,8 +56,8 @@
 // ============================================================================
 // CAN Transceiver
 // ============================================================================
-#define GPIO_CAN_TX  38  // CAN TX
-#define GPIO_CAN_RX  39  // CAN RX
+#define GPIO_CAN_TX  39  // CAN TX (bench-verified 2026-09-22; matches PCB net CAN_TX)
+#define GPIO_CAN_RX  38  // CAN RX (matches PCB net CAN_RX)
 
 // ============================================================================
 // I2C Bus

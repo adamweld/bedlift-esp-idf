@@ -45,11 +45,15 @@ static float slew(float v, float target, float rate, float dt)
 void motion_fsm_step(motion_fsm_t *f, int64_t now, motion_intent_e intent,
                      const float vec[SYS_NUM_MOTORS],
                      const float level_v[SYS_NUM_MOTORS],
+                     const float trim_v[SYS_NUM_MOTORS],
+                     bool level_done,
                      const motion_motor_in_t in[SYS_NUM_MOTORS],
                      float dt_s, motion_out_t *out)
 {
     memset(out, 0, sizeof(*out));
     int64_t age = now - f->t_entry;
+
+    if (intent != MI_LEVEL) f->level_complete = false;
 
     switch (f->state) {
 
@@ -104,7 +108,7 @@ void motion_fsm_step(motion_fsm_t *f, int64_t now, motion_intent_e intent,
                 }
                 enter(f, MOTION_PAWL_UNLOAD, now);
             }
-        } else if (intent == MI_LEVEL) {
+        } else if (intent == MI_LEVEL && !f->level_complete) {
             f->descending = true;               // leveling may lower corners
             out->req_enable = true;
             for (int i = 0; i < SYS_NUM_MOTORS; i++) {
@@ -162,8 +166,10 @@ void motion_fsm_step(motion_fsm_t *f, int64_t now, motion_intent_e intent,
                 if (fabsf(vec[i] - f->vec[i]) > 0.01f) want = false;
         float target = want ? f->v_cruise : 0.0f;
         f->group_v = slew(f->group_v, target, f->a_max, dt_s);
-        for (int i = 0; i < SYS_NUM_MOTORS; i++)
-            out->v_cmd[i] = f->group_v * f->vec[i];  // control-law trims: M10
+        for (int i = 0; i < SYS_NUM_MOTORS; i++) {
+            float trim = trim_v ? trim_v[i] : 0.0f;
+            out->v_cmd[i] = f->group_v * f->vec[i] + trim;
+        }
         if (!want) enter(f, MOTION_RAMP_DOWN, now);
         break;
     }
@@ -177,6 +183,12 @@ void motion_fsm_step(motion_fsm_t *f, int64_t now, motion_intent_e intent,
             if (v < -f->v_level_max) v = -f->v_level_max;
             out->v_cmd[i] = v;
             f->vec[i] = 0;               // settle ramp uses zero vector
+        }
+        if (level_done) {
+            // within target and untwisted: finish the sequence on our own —
+            // ramp down, settle onto pawls, depower. The user just holds.
+            f->level_complete = true;
+            enter(f, MOTION_RAMP_DOWN, now);
         }
         if (intent != MI_LEVEL) enter(f, MOTION_RAMP_DOWN, now);
         break;

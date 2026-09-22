@@ -33,3 +33,16 @@
 3	19	1790111481247240742	/Users/weld/code/bedlift-esp-idf/bedlift/hostsim/build/CMakeFiles/cmake.verify_globs	66e5e7d1e03e449c
 29	97	1790111481273355923	CMakeFiles/hostsim.dir/Users/weld/code/bedlift-esp-idf/bedlift/components/motion/control_law.c.o	dc4945b34cbfcc12
 98	355	1790111481341917851	hostsim	675477d441823c6e
+2	18	1790111714723600215	/Users/weld/code/bedlift-esp-idf/bedlift/hostsim/build/CMakeFiles/cmake.verify_globs	66e5e7d1e03e449c
+27	90	1790111714748264005	CMakeFiles/hostsim.dir/Users/weld/code/bedlift-esp-idf/bedlift/components/buttons/buttons_sm.c.o	bc5a6ef2285151d4
+90	256	1790111714811162992	hostsim	675477d441823c6e
+2	15	1790112015814398807	/Users/weld/code/bedlift-esp-idf/bedlift/hostsim/build/CMakeFiles/cmake.verify_globs	66e5e7d1e03e449c
+25	97	1790112015837225075	CMakeFiles/hostsim.dir/Users/weld/code/bedlift-esp-idf/bedlift/components/motion/control_law.c.o	dc4945b34cbfcc12
+25	97	1790112015837437578	CMakeFiles/hostsim.dir/Users/weld/code/bedlift-esp-idf/bedlift/components/safety/hazard_checks.c.o	2dcb2a24a94eece6
+24	98	1790112015837009948	CMakeFiles/hostsim.dir/Users/weld/code/bedlift-esp-idf/bedlift/components/motion/motion_fsm.c.o	12a16306bb829b54
+1	14	1790112038292326741	/Users/weld/code/bedlift-esp-idf/bedlift/hostsim/build/CMakeFiles/cmake.verify_globs	66e5e7d1e03e449c
+18	822	1790112038309036604	CMakeFiles/hostsim.dir/main.cpp.o	32a3dec5ea6602b8
+822	986	1790112039113343746	hostsim	675477d441823c6e
+3	17	1790112054766679052	/Users/weld/code/bedlift-esp-idf/bedlift/hostsim/build/CMakeFiles/cmake.verify_globs	66e5e7d1e03e449c
+21	878	1790112054785070351	CMakeFiles/hostsim.dir/main.cpp.o	32a3dec5ea6602b8
+878	1045	1790112055642052527	hostsim	675477d441823c6e

@@ -185,6 +185,20 @@ static void app_step(int64_t t, float dt)
     if (intent == MI_LEVEL || fsm.state == MOTION_LEVELING)
         level_control(&level_law, &tf, &tr, level_v);
 
+    // leveling auto-complete: within 1 deg (level + twist) for 500 ms
+    static int64_t within_since = 0;
+    bool within = level_within(&tf, &tr, level_law.done_deg);
+    if (!within) within_since = 0;
+    else if (within_since == 0) within_since = t;
+    bool level_done = within && (t - within_since > 500000);
+
+    // travel trim: only for uniform LIFT moves (differential modes command
+    // tilt changes on purpose — trim would fight the user)
+    float trim_v[SIM_NUM_MOTORS] = {};
+    if (app_mode == APP_MODE_LIFT &&
+        (fsm.state == MOTION_MOVING_UP || fsm.state == MOTION_MOVING_DOWN))
+        travel_trim(&level_law, &tf, &tr, fabsf(fsm.group_v), trim_v);
+
     // a fresh motion attempt from READY re-evaluates; stop-latched flags clear
     if (fsm.state == MOTION_READY && intent != MI_NONE) latched_flags = 0;
 
@@ -207,7 +221,7 @@ static void app_step(int64_t t, float dt)
         intent = MI_NONE;                        // force controlled stop
     }
 
-    motion_fsm_step(&fsm, t, intent, vec, level_v, in, dt, &fsm_out);
+    motion_fsm_step(&fsm, t, intent, vec, level_v, trim_v, level_done, in, dt, &fsm_out);
     if (fsm.state != MOTION_FAULT) app_apply_outputs(t);
     memcpy(v_cmd_prev, fsm_out.v_cmd, sizeof(v_cmd_prev));
 
@@ -618,8 +632,6 @@ static int run_level_test()
     float v_prev[4] = {};
     motion_out_t prev_out = {};
     int64_t last_cmd = 0, last_print = 0;
-    int converged_ms = 0;
-    bool leveled_ok = false;
 
     for (int step = 0; step < 90000; step++) {
         t += 1000;
@@ -633,7 +645,7 @@ static int run_level_test()
         else if (ts < 7.5f) { intent = MI_MOVE; vec = vec_roll; }
         else if (ts < 8.3f) { intent = MI_MOVE; vec = vec_twist; }
         else if (ts < 10.0f) intent = MI_NONE;
-        else if (!leveled_ok) intent = MI_LEVEL;
+        else intent = MI_LEVEL;   // held throughout: FSM must auto-complete
 
         motion_motor_in_t in[4];
         for (int i = 0; i < 4; i++) {
@@ -655,9 +667,13 @@ static int run_level_test()
         tilt_filter(&tr, &raw_r, dt, 0.25f);
 
         float level_v[4] = {};
-        bool conv = false;
         if (intent == MI_LEVEL || fsm.state == MOTION_LEVELING)
-            conv = level_control(&level_law, &tf, &tr, level_v);
+            level_control(&level_law, &tf, &tr, level_v);
+        static int64_t within_since = 0;
+        bool within = level_within(&tf, &tr, level_law.done_deg);
+        if (!within) within_since = 0;
+        else if (within_since == 0) within_since = t;
+        bool level_done = within && (t - within_since > 500000);
 
         uint32_t warn_only = SAFE_F_RACKING;   // deliberate twisting below
         safety_result_t sr;
@@ -668,7 +684,7 @@ static int run_level_test()
             return 1;
         }
 
-        motion_fsm_step(&fsm, t, intent, vec, level_v, in, dt, &fsm_out);
+        motion_fsm_step(&fsm, t, intent, vec, level_v, nullptr, level_done, in, dt, &fsm_out);
 
         sim_power_set(fsm_out.ssr_on, fsm_out.lock_on);
         if (fsm_out.req_init && !prev_out.req_init)
@@ -696,10 +712,6 @@ static int run_level_test()
                   if (cybergear_process_message(&motors[i], &m, t) != ESP_ERR_NOT_FOUND)
                       break; }
 
-        if (fsm.state == MOTION_LEVELING && conv) converged_ms++;
-        else if (fsm.state == MOTION_LEVELING) converged_ms = 0;
-        if (converged_ms > 500) leveled_ok = true;   // release the button
-
         if (t - last_print >= 1000000) {
             last_print = t;
             printf("t=%4.1fs %-7s rollF %+6.2f rollR %+6.2f pitch %+6.2f "
@@ -711,11 +723,14 @@ static int run_level_test()
                    sim_motor_angle(2), sim_motor_angle(3));
         }
 
-        if (leveled_ok && fsm.state == MOTION_READY) {
+        if (fsm.level_complete && fsm.state == MOTION_READY) {
             float p = 0.5f * (tf.pitch_deg + tr.pitch_deg);
-            bool pass = fabsf(tf.roll_deg) < 0.4f && fabsf(tr.roll_deg) < 0.4f &&
-                        fabsf(p) < 0.4f;
-            printf("settled at t=%.1fs: rollF %+;.2f rollR %+.2f pitch %+.2f -> %s\n",
+            // gate = auto-lock target (1 deg) + settle margin
+            float g = level_law.done_deg + 0.2f;
+            bool pass = fabsf(tf.roll_deg) < g && fabsf(tr.roll_deg) < g &&
+                        fabsf(p) < g && fabsf(tf.roll_deg - tr.roll_deg) < g;
+            printf("auto-completed+settled at t=%.1fs: rollF %+.2f rollR %+.2f "
+                   "pitch %+.2f -> %s\n",
                    ts, tf.roll_deg, tr.roll_deg, p, pass ? "PASS" : "FAIL");
             return pass ? 0 : 1;
         }
@@ -724,8 +739,137 @@ static int run_level_test()
     return 1;
 }
 
+// ---- travel feedback test: ./hostsim --test-travel -------------------------
+// Disturb the frame (pitch + twist ~2 deg), then run a long LIFT raise with
+// travel trim active. Pass: tilt errors shrink below 1 deg DURING travel.
+static int run_travel_test()
+{
+    sim_config_t cfg;
+    sim_default_config(&cfg);
+    sim_init(&cfg);
+    cybergear_set_transport(sim_can_tx, nullptr);
+    for (int i = 0; i < SIM_NUM_MOTORS; i++)
+        cybergear_init(&motors[i], 0x00, k_ids[i], 0);
+    motion_fsm_init(&fsm);
+    fsm.t_boot_us = 300 * 1000;
+    safety_init(&safety);
+    level_law_init(&level_law);
+
+    const float vec_up[4] = MVEC_LIFT_UP;
+    const float vec_pitch[4] = MVEC_PITCH_POS;
+    const float vec_twist[4] = MVEC_TWIST_POS;
+
+    int64_t t = 0;
+    const float dt = 0.001f;
+    float v_prev[4] = {};
+    motion_out_t prev_out = {};
+    int64_t last_cmd = 0, last_print = 0;
+
+    for (int step = 0; step < 60000; step++) {
+        t += 1000;
+        float ts = t / 1e6f;
+
+        motion_intent_e intent = MI_NONE;
+        const float *vec = nullptr;
+        bool lift_phase = false;
+        if (ts < 2.0f)      { intent = MI_MOVE; vec = vec_up; }
+        else if (ts < 3.6f) { intent = MI_MOVE; vec = vec_pitch; }
+        else if (ts < 4.6f) { intent = MI_MOVE; vec = vec_twist; }
+        else if (ts < 6.0f) intent = MI_NONE;
+        else if (ts < 20.0f) { intent = MI_MOVE; vec = vec_up; lift_phase = true; }
+        else intent = MI_NONE;
+
+        motion_motor_in_t in[4];
+        for (int i = 0; i < 4; i++) {
+            in[i].theta_rad = sim_motor_angle(i);
+            in[i].vel_rad_s = motors[i].status.speed;
+            in[i].torque_nm = motors[i].status.torque;
+            in[i].temp_c = motors[i].status.temperature;
+            in[i].online = t - motors[i].status.last_rx_us < 150000;
+            in[i].faults = motors[i].faults;
+        }
+        tilt_snap_t raw_f, raw_r;
+        { float ax, ay, az;
+          sim_accel_read(0, &ax, &ay, &az);
+          raw_f = { atan2f(ay, az) * 57.2958f, atan2f(ax, az) * 57.2958f, true, t };
+          sim_accel_read(1, &ax, &ay, &az);
+          raw_r = { atan2f(ay, az) * 57.2958f, atan2f(ax, az) * 57.2958f, true, t }; }
+        static tilt_snap_t tf = {}, tr = {};
+        tilt_filter(&tf, &raw_f, dt, 0.25f);
+        tilt_filter(&tr, &raw_r, dt, 0.25f);
+
+        float trim_v[4] = {};
+        if (lift_phase &&
+            (fsm.state == MOTION_MOVING_UP || fsm.state == MOTION_MOVING_DOWN))
+            travel_trim(&level_law, &tf, &tr, fabsf(fsm.group_v), trim_v);
+
+        safety_result_t sr;
+        safety_check(&safety, t, dt, in, v_prev, &tf, &tr, fsm.state, 24.5f,
+                     SAFE_F_RACKING, &sr);
+        if (sr.verdict == SAFE_TRIP) {
+            printf("TRIP flags=0x%x at t=%.1fs — test FAIL\n", sr.flags, ts);
+            return 1;
+        }
+
+        motion_fsm_step(&fsm, t, intent, vec, nullptr, trim_v, false, in, dt, &fsm_out);
+
+        sim_power_set(fsm_out.ssr_on, fsm_out.lock_on);
+        if (fsm_out.req_init && !prev_out.req_init)
+            for (auto &m : motors) {
+                cybergear_stop(&m);
+                cybergear_set_mode(&m, CYBERGEAR_MODE_SPEED);
+                cybergear_set_limit_current(&m, 7.0f);
+            }
+        if (fsm_out.req_enable && !prev_out.req_enable)
+            for (auto &m : motors) cybergear_enable(&m);
+        if (fsm_out.req_disable && !prev_out.req_disable)
+            for (auto &m : motors) cybergear_stop(&m);
+        prev_out = fsm_out;
+        if (fsm_out.ssr_on && t - last_cmd >= 10000) {
+            last_cmd = t;
+            for (int i = 0; i < 4; i++)
+                cybergear_set_speed(&motors[i], fsm_out.v_cmd[i]);
+        }
+        memcpy(v_prev, fsm_out.v_cmd, sizeof(v_prev));
+
+        sim_step(t, dt);
+        { twai_message_t m;
+          while (sim_can_poll_rx(&m))
+              for (int i = 0; i < 4; i++)
+                  if (cybergear_process_message(&motors[i], &m, t) != ESP_ERR_NOT_FOUND)
+                      break; }
+
+        if (t - last_print >= 1000000) {
+            last_print = t;
+            printf("t=%4.1fs %-7s rollF %+6.2f rollR %+6.2f pitch %+6.2f "
+                   "twist %+6.2f th[%5.2f %5.2f %5.2f %5.2f]\n",
+                   ts, motion_state_name(fsm.state),
+                   tf.roll_deg, tr.roll_deg,
+                   0.5f * (tf.pitch_deg + tr.pitch_deg),
+                   tf.roll_deg - tr.roll_deg,
+                   sim_motor_angle(0), sim_motor_angle(1),
+                   sim_motor_angle(2), sim_motor_angle(3));
+        }
+
+        if (ts > 19.5f && ts < 19.6f) {
+            float p = 0.5f * (tf.pitch_deg + tr.pitch_deg);
+            bool pass = fabsf(tf.roll_deg) < 1.0f && fabsf(tr.roll_deg) < 1.0f &&
+                        fabsf(p) < 1.0f && fabsf(tf.roll_deg - tr.roll_deg) < 1.0f;
+            printf("end of travel: rollF %+.2f rollR %+.2f pitch %+.2f "
+                   "twist %+.2f -> %s\n",
+                   tf.roll_deg, tr.roll_deg, p, tf.roll_deg - tr.roll_deg,
+                   pass ? "PASS" : "FAIL");
+            return pass ? 0 : 1;
+        }
+    }
+    printf("timeout — FAIL\n");
+    return 1;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc >= 2 && strcmp(argv[1], "--test-travel") == 0)
+        return run_travel_test();
     if (argc >= 2 && strcmp(argv[1], "--test-level") == 0)
         return run_level_test();
     if (argc >= 3 && strcmp(argv[1], "--snap") == 0) {

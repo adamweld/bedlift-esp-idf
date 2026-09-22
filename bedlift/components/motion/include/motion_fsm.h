@@ -78,6 +78,7 @@ typedef struct {
     bool seated[SYS_NUM_MOTORS];
     int64_t seat_since[SYS_NUM_MOTORS];
     bool init_done;
+    bool level_complete;    // auto-completed; don't re-level until released
 } motion_fsm_t;
 
 void motion_fsm_init(motion_fsm_t *f);
@@ -88,12 +89,19 @@ void motion_fsm_fault(motion_fsm_t *f);
 void motion_fsm_ack(motion_fsm_t *f);
 
 // vec: per-motor direction (-1..1), only read when intent == MI_MOVE.
-// level_v: per-motor velocities from the leveling control law, only read
-// during MOTION_LEVELING (clamped to v_level_max). Either may be NULL when
-// unused for the current intent.
+// level_v: leveling-law velocities, read during MOTION_LEVELING (clamped).
+// trim_v: travel-trim velocities added on top of group motion while MOVING
+// (caller passes zeros/NULL for differential modes, where trim would fight
+// the user's commanded tilt change).
+// level_done: leveling auto-complete condition (level + untwisted, dwelled);
+// when it goes true during LEVELING the FSM ramps down, settles onto the
+// pawls and latches level_complete so a still-held LEVEL doesn't restart.
+// Any pointer may be NULL when unused for the current intent.
 void motion_fsm_step(motion_fsm_t *f, int64_t now_us, motion_intent_e intent,
                      const float vec[SYS_NUM_MOTORS],
                      const float level_v[SYS_NUM_MOTORS],
+                     const float trim_v[SYS_NUM_MOTORS],
+                     bool level_done,
                      const motion_motor_in_t in[SYS_NUM_MOTORS],
                      float dt_s, motion_out_t *out);
 

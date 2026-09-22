@@ -19,6 +19,8 @@ typedef struct {
     float kp_pitch;
     float deadband_deg; // errors below this contribute nothing (anti-hunt)
     float v_max;        // per-motor clamp, rad/s
+    float done_deg;     // leveling auto-completes inside this (level + twist)
+    float trim_frac;    // travel trim authority as a fraction of |v_group|
 } level_law_t;
 
 void level_law_init(level_law_t *l);
@@ -33,6 +35,19 @@ bool level_control(const level_law_t *l, const tilt_snap_t *front,
 // `state` holds the filtered value; seed it from the first valid raw sample.
 void tilt_filter(tilt_snap_t *state, const tilt_snap_t *raw,
                  float dt_s, float tau_s);
+
+// True when both rolls, the mean pitch AND the front/rear twist are all
+// inside target_deg — the leveling auto-complete condition.
+bool level_within(const tilt_snap_t *front, const tilt_snap_t *rear,
+                  float target_deg);
+
+// Tilt trim for uniform (LIFT) travel: same front/rear-independent mapping
+// as leveling, scaled and clamped to trim_frac x |v_group| so the correction
+// rides on top of the group motion and cancels level/twist drift en route.
+// Returns zeros when tilt is invalid.
+void travel_trim(const level_law_t *l, const tilt_snap_t *front,
+                 const tilt_snap_t *rear, float v_group_abs,
+                 float trim_out[SYS_NUM_MOTORS]);
 
 #ifdef __cplusplus
 }

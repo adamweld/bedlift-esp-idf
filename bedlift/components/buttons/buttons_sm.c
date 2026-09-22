@@ -14,7 +14,7 @@ void btn_sm_init(btn_sm_t *sm)
     memset(sm, 0, sizeof(*sm));
     sm->debounce_us = 20 * 1000;
     sm->chord_us = 80 * 1000;
-    sm->chord_hold_us = 400 * 1000;   // deliberate hold, not a brush
+    sm->chord_hold_us = 200 * 1000;   // deliberate hold, not a brush
     sm->hold_us = 600 * 1000;
     sm->repeat_us = 150 * 1000;
 }

@@ -29,6 +29,7 @@ add_executable(hostsim
     ${CMAKE_CURRENT_SOURCE_DIR}/../components/buttons/buttons_sm.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../components/ui/ui_panels.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../components/motion/motion_fsm.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../components/motion/control_law.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../components/safety/hazard_checks.c
     ${LGFX_SRC}
 )

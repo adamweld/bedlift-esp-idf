@@ -11,6 +11,7 @@ void motion_fsm_init(motion_fsm_t *f)
     f->v_unload = 3.0f;
     f->theta_unload = 0.12f;
     f->v_settle = 1.0f;
+    f->v_level_max = 1.0f;
     f->seat_torque = 1.5f;
     f->t_boot_us = 1500 * 1000;
     f->t_unload_max_us = 350 * 1000;
@@ -43,6 +44,7 @@ static float slew(float v, float target, float rate, float dt)
 
 void motion_fsm_step(motion_fsm_t *f, int64_t now, motion_intent_e intent,
                      const float vec[SYS_NUM_MOTORS],
+                     const float level_v[SYS_NUM_MOTORS],
                      const motion_motor_in_t in[SYS_NUM_MOTORS],
                      float dt_s, motion_out_t *out)
 {
@@ -169,8 +171,13 @@ void motion_fsm_step(motion_fsm_t *f, int64_t now, motion_intent_e intent,
     case MOTION_LEVELING:
         out->ssr_on = true;
         out->lock_on = true;
-        // leveling control law lands in M10; hold at zero for now
-        for (int i = 0; i < SYS_NUM_MOTORS; i++) out->v_cmd[i] = 0;
+        for (int i = 0; i < SYS_NUM_MOTORS; i++) {
+            float v = level_v ? level_v[i] : 0.0f;
+            if (v > f->v_level_max) v = f->v_level_max;
+            if (v < -f->v_level_max) v = -f->v_level_max;
+            out->v_cmd[i] = v;
+            f->vec[i] = 0;               // settle ramp uses zero vector
+        }
         if (intent != MI_LEVEL) enter(f, MOTION_RAMP_DOWN, now);
         break;
 

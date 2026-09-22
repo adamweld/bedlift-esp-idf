@@ -59,6 +59,7 @@ typedef struct {
     float v_unload;         // pawl-unload drive (positive = up)
     float theta_unload;     // required advance per motor
     float v_settle;         // settle-onto-pawl drive (positive magnitude)
+    float v_level_max;      // clamp on leveling velocities
     float seat_torque;      // |torque| indicating pawl contact
     int64_t t_boot_us;      // SSR-close -> motors ready
     int64_t t_unload_max_us;
@@ -86,10 +87,13 @@ void motion_fsm_fault(motion_fsm_t *f);
 // Acknowledge a fault: back to IDLE (caller re-runs diagnostics on next move).
 void motion_fsm_ack(motion_fsm_t *f);
 
-// vec: per-motor direction (-1..1), only read when intent == MI_MOVE; may be
-// NULL for MI_NONE / MI_LEVEL.
+// vec: per-motor direction (-1..1), only read when intent == MI_MOVE.
+// level_v: per-motor velocities from the leveling control law, only read
+// during MOTION_LEVELING (clamped to v_level_max). Either may be NULL when
+// unused for the current intent.
 void motion_fsm_step(motion_fsm_t *f, int64_t now_us, motion_intent_e intent,
                      const float vec[SYS_NUM_MOTORS],
+                     const float level_v[SYS_NUM_MOTORS],
                      const motion_motor_in_t in[SYS_NUM_MOTORS],
                      float dt_s, motion_out_t *out);
 

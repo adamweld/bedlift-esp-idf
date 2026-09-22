@@ -50,7 +50,7 @@
 #define T_UNLOAD_TIMEOUT_MS 350
 #define T_SETTLE_TIMEOUT_MS 1000
 #define T_BOOT_SETTLE_MS    1500   // SSR-close -> motors ready; measure in A1
-#define T_READY_KEEPWARM_MS 10000
+#define T_READY_KEEPWARM_MS 5000   // SSR depowers after 5 s of inaction
 #define MOTOR_LIMIT_CURRENT_A 7.0f
 #define TRIM_POS_CLAMP_FRAC  0.10f
 #define TRIM_TILT_CLAMP_FRAC 0.05f
@@ -66,8 +66,8 @@
 #define OVERSPEED_SAMPLES 3
 #define TELEM_LOSS_MS     150
 #define MOTOR_TEMP_STOP_C 70.0f
-#define RACK_WARN_DEG     1.5f
-#define RACK_TRIP_DEG     3.0f
+// RACK_WARN_DEG / RACK_TRIP_DEG live in sys_state.h (shared with the UI):
+// 10 / 15 deg — the vehicle itself may be parked ~20 deg off-level.
 #define POS_DESYNC_MAX_RAD 2.0f
 #define SAFETY_BRAKE_WINDOW_MS 200
 

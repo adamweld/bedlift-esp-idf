@@ -8,9 +8,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "esp_err.h"
-#include "driver/twai.h"
-
+#include "cg_compat.h"
 #include "cybergear_defs.h"
 
 #ifdef __cplusplus
@@ -61,6 +59,14 @@ typedef struct {
 typedef void (*cybergear_frame_tap_t)(int dir, const twai_message_t *msg);
 void cybergear_set_frame_tap(cybergear_frame_tap_t tap);
 
+// Injectable transport: the library never touches TWAI directly. On target,
+// the canbus component registers a twai_transmit-based sender; in sim/host
+// builds, the virtual plant registers its own. Unset transport -> commands
+// return ESP_ERR_INVALID_STATE.
+typedef esp_err_t (*cybergear_send_fn_t)(const twai_message_t *msg,
+                                         TickType_t ticks_to_wait, void *ctx);
+void cybergear_set_transport(cybergear_send_fn_t send, void *ctx);
+
 // ---- lifecycle -------------------------------------------------------------
 esp_err_t cybergear_init(cybergear_motor_t *motor, uint8_t master_can_id,
                          uint8_t can_id, TickType_t transmit_ticks_to_wait);
@@ -92,7 +98,10 @@ esp_err_t cybergear_set_speed(cybergear_motor_t *motor, float speed);
 
 // ---- RX --------------------------------------------------------------------
 // Offer a received frame; ESP_ERR_NOT_FOUND if it belongs to another motor.
-esp_err_t cybergear_process_message(cybergear_motor_t *motor, const twai_message_t *message);
+// now_us: caller-supplied monotonic timestamp (esp_timer on target, chrono on
+// host) — keeps this module free of platform time dependencies.
+esp_err_t cybergear_process_message(cybergear_motor_t *motor,
+                                    const twai_message_t *message, int64_t now_us);
 
 // ---- accessors -------------------------------------------------------------
 void cybergear_get_status(const cybergear_motor_t *motor, cybergear_status_t *status);

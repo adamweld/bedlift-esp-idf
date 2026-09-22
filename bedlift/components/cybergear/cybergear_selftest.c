@@ -77,7 +77,7 @@ int cybergear_selftest_run(void)
     rx.data[2] = mid >> 8; rx.data[3] = mid & 0xFF;   // vel ~0
     rx.data[4] = mid >> 8; rx.data[5] = mid & 0xFF;   // torque ~0
     rx.data[6] = 0x00; rx.data[7] = 0xC7;             // 19.9 C
-    CHECK(cybergear_process_message(&motor, &rx) == ESP_OK, "feedback accepted");
+    CHECK(cybergear_process_message(&motor, &rx, 1000) == ESP_OK, "feedback accepted");
     CHECK(motor.status.state == CYBERGEAR_STATE_RUNNING, "run-mode bits 23..22");
     CHECK(motor.status.temperature > 19.8f && motor.status.temperature < 20.0f,
           "temp scale /10");
@@ -87,7 +87,7 @@ int cybergear_selftest_run(void)
     // RX routing: frame for motor 3 rejected by motor 1's handler
     cybergear_motor_t other;
     cybergear_init(&other, 0x00, 0x01, 0);
-    CHECK(cybergear_process_message(&other, &rx) == ESP_ERR_NOT_FOUND,
+    CHECK(cybergear_process_message(&other, &rx, 1000) == ESP_ERR_NOT_FOUND,
           "reply routed by ID bits 15..8");
 
     // RX: type-21 fault frame — full word decode incl. overload byte
@@ -97,7 +97,7 @@ int cybergear_selftest_run(void)
     fx.data[0] = fword >> 24; fx.data[1] = fword >> 16;
     fx.data[2] = fword >> 8;  fx.data[3] = fword & 0xFF;
     fx.data[4] = fx.data[5] = fx.data[6] = 0; fx.data[7] = 0;
-    CHECK(cybergear_process_message(&motor, &fx) == ESP_OK, "fault frame accepted");
+    CHECK(cybergear_process_message(&motor, &fx, 2000) == ESP_OK, "fault frame accepted");
     CHECK((motor.faults & CG_FAULT_OC_PHASE_A) && (motor.faults & CG_FAULT_OVERVOLTAGE)
           && (motor.faults & CG_FAULT_DRIVER_CHIP), "fault word bits decoded");
     CHECK(((motor.faults >> 16) & 0xFF) == 0xA5, "overload byte decoded (was TODO)");
@@ -107,7 +107,7 @@ int cybergear_selftest_run(void)
     px.identifier = ((uint32_t)CG_TYPE_PARAM_READ << 24) | (0x03 << 8) | 0x00;
     px.data[0] = 0x1C; px.data[1] = 0x70;
     float vbus = 24.6f; memcpy(&px.data[4], &vbus, 4);
-    CHECK(cybergear_process_message(&motor, &px) == ESP_OK, "param reply accepted");
+    CHECK(cybergear_process_message(&motor, &px, 3000) == ESP_OK, "param reply accepted");
     CHECK(motor.params.vbus > 24.5f && motor.params.vbus < 24.7f &&
           motor.params.updated, "vbus float landed");
 

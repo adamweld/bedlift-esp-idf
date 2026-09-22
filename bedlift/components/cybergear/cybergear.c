@@ -1,10 +1,17 @@
 #include <string.h>
-#include "esp_timer.h"
 #include "cybergear.h"
 
 static cybergear_frame_tap_t s_tap = NULL;
+static cybergear_send_fn_t s_send = NULL;
+static void *s_send_ctx = NULL;
 
 void cybergear_set_frame_tap(cybergear_frame_tap_t tap) { s_tap = tap; }
+
+void cybergear_set_transport(cybergear_send_fn_t send, void *ctx)
+{
+    s_send = send;
+    s_send_ctx = ctx;
+}
 
 // ---------------------------------------------------------------------------
 // Pure frame builders
@@ -91,7 +98,8 @@ float cybergear_uint_to_float(uint16_t x, float x_min, float x_max)
 static esp_err_t cg_transmit(cybergear_motor_t *motor, twai_message_t *msg)
 {
     if (s_tap) s_tap(0, msg);
-    return twai_transmit(msg, motor->transmit_ticks_to_wait);
+    if (!s_send) return ESP_ERR_INVALID_STATE;
+    return s_send(msg, motor->transmit_ticks_to_wait, s_send_ctx);
 }
 
 static esp_err_t cg_send_simple(cybergear_motor_t *motor, uint8_t type,
@@ -250,7 +258,7 @@ esp_err_t cybergear_set_speed(cybergear_motor_t *motor, float speed)
 // RX
 // ---------------------------------------------------------------------------
 
-static esp_err_t cg_rx_feedback(cybergear_motor_t *motor, const twai_message_t *m)
+static esp_err_t cg_rx_feedback(cybergear_motor_t *motor, const twai_message_t *m, int64_t now_us)
 {
     esp_err_t err = ESP_OK;
     uint16_t raw_pos  = (uint16_t)(m->data[0] << 8 | m->data[1]);
@@ -269,7 +277,7 @@ static esp_err_t cg_rx_feedback(cybergear_motor_t *motor, const twai_message_t *
     motor->status.speed       = cybergear_uint_to_float(raw_vel, -CG_VEL_RANGE, CG_VEL_RANGE);
     motor->status.torque      = cybergear_uint_to_float(raw_tq, -CG_TORQUE_RANGE, CG_TORQUE_RANGE);
     motor->status.temperature = (float)raw_temp / 10.0f;
-    motor->status.last_rx_us  = esp_timer_get_time();
+    motor->status.last_rx_us  = now_us;
 
     // Live fault bits in ID 21..16 (fork fix: bit17 is overcurrent per manual)
     uint32_t f = motor->faults &
@@ -311,7 +319,7 @@ static esp_err_t cg_rx_fault(cybergear_motor_t *motor, const twai_message_t *m)
     return ESP_OK;
 }
 
-static esp_err_t cg_rx_param(cybergear_motor_t *motor, const twai_message_t *m)
+static esp_err_t cg_rx_param(cybergear_motor_t *motor, const twai_message_t *m, int64_t now_us)
 {
     uint16_t index = (uint16_t)(m->data[1] << 8 | m->data[0]);
     uint8_t u8; int16_t i16; float f32;
@@ -342,18 +350,18 @@ static esp_err_t cg_rx_param(cybergear_motor_t *motor, const twai_message_t *m)
     }
     motor->params.last_index = index;
     motor->params.updated = true;
-    motor->params.last_rx_us = esp_timer_get_time();
+    motor->params.last_rx_us = now_us;
     return ESP_OK;
 }
 
-static esp_err_t cg_rx_ping(cybergear_motor_t *motor, const twai_message_t *m)
+static esp_err_t cg_rx_ping(cybergear_motor_t *motor, const twai_message_t *m, int64_t now_us)
 {
     memcpy(&motor->mcu_uid, m->data, 8);
-    motor->ping_rx_us = esp_timer_get_time();
+    motor->ping_rx_us = now_us;
     return ESP_OK;
 }
 
-esp_err_t cybergear_process_message(cybergear_motor_t *motor, const twai_message_t *m)
+esp_err_t cybergear_process_message(cybergear_motor_t *motor, const twai_message_t *m, int64_t now_us)
 {
     // 5-bit type field (fork fix: old mask took 6 bits)
     uint8_t type = (m->identifier >> 24) & 0x1F;
@@ -368,9 +376,9 @@ esp_err_t cybergear_process_message(cybergear_motor_t *motor, const twai_message
     if (s_tap) s_tap(1, m);
 
     switch (type) {
-        case CG_TYPE_PING:       return cg_rx_ping(motor, m);
-        case CG_TYPE_FEEDBACK:   return cg_rx_feedback(motor, m);
-        case CG_TYPE_PARAM_READ: return cg_rx_param(motor, m);
+        case CG_TYPE_PING:       return cg_rx_ping(motor, m, now_us);
+        case CG_TYPE_FEEDBACK:   return cg_rx_feedback(motor, m, now_us);
+        case CG_TYPE_PARAM_READ: return cg_rx_param(motor, m, now_us);
         case CG_TYPE_FAULT:      return cg_rx_fault(motor, m);
         default:                 return ESP_ERR_INVALID_RESPONSE;
     }

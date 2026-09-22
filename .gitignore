@@ -67,3 +67,4 @@ experiments/*/build
 *.swo
 *~
 
+bedlift/build/

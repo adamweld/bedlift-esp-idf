@@ -1,0 +1,18 @@
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# 1 kHz tick: clean 10 ms control period, ms-granularity button timing
+CONFIG_FREERTOS_HZ=1000
+
+# Console/logs over the Feather's native USB-C
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# Task watchdog: motion + can_rx subscribe; trip = panic = outputs to safe defaults
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=1
+CONFIG_ESP_TASK_WDT_PANIC=y
+
+# Brownout: reset rather than limp (H9)
+CONFIG_ESP_BROWNOUT_DET=y
+
+CONFIG_COMPILER_CXX_EXCEPTIONS=n

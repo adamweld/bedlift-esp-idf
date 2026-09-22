@@ -254,7 +254,7 @@ static void draw_fault_detail(LGFX_Sprite &fb, const sys_snapshot_t &s)
     }
     fb.setTextColor(COL_WARN(fb));
     fb.setCursor(px + 6, py + ph - 12);
-    fb.print("hold \x07 to reset");
+    fb.print("hold CENTER to reset");
 }
 
 // ---------------------------------------------------------------------------
@@ -312,23 +312,21 @@ static void draw_debug_table(LGFX_Sprite &fb, const sys_snapshot_t &s)
     fb.setTextSize(1);
     fb.setTextDatum(lgfx::top_left);
     fb.setTextColor(COL_DIM(fb));
-    fb.setCursor(px + 6, py + 4);
-    fb.printf("    pos     vel    F");
+    fb.setCursor(px + 4, py + 4);
+    fb.printf("     pos   vel    F");
+    fb.setCursor(px + 4, py + 13);
+    fb.printf("     rad  rad/s   Nm");
 
     for (int i = 0; i < SYS_NUM_MOTORS; i++) {
         const motor_snap_t &m = s.motor[i];
-        int y = py + 18 + i * 13;
+        int y = py + 28 + i * 13;
         bool stale = !m.online;
         fb.setTextColor(stale ? COL_DIM(fb)
                               : (m.faults ? COL_ERR(fb) : COL_TEXT(fb)));
-        fb.setCursor(px + 6, y);
-        fb.printf("M%d %+7.2f %+6.2f %+5.1f", i + 1,
+        fb.setCursor(px + 4, y);
+        fb.printf("M%d %+6.1f %+5.2f %+5.1f", i + 1,
                   m.theta_rad, m.vel_rad_s, m.torque_nm);
     }
-
-    fb.setTextColor(COL_DIM(fb));
-    fb.setCursor(px + 6, py + 18 + SYS_NUM_MOTORS * 13 + 4);
-    fb.printf("rad     rad/s   Nm");
 }
 
 void ui_render(LGFX_Sprite &fb, const sys_snapshot_t &s)

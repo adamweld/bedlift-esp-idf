@@ -25,27 +25,36 @@ static bool moving_state(motion_state_e m)
            m == MOTION_LEVELING || m == MOTION_RAMP_DOWN || m == MOTION_SETTLE;
 }
 
+static uint32_t s_warn_only;   // set per call; flags herein cap at WARN
+
 static void raise(safety_result_t *r, safety_verdict_e v, uint32_t flag)
 {
     r->flags |= flag;
+    if ((flag & s_warn_only) && v > SAFE_WARN) v = SAFE_WARN;
     if (v > r->verdict) r->verdict = v;
 }
 
-void safety_check(safety_ctx_t *c, int64_t now,
+void safety_check(safety_ctx_t *c, int64_t now, float dt_s,
                   const motion_motor_in_t motor[SYS_NUM_MOTORS],
                   const float v_cmd_prev[SYS_NUM_MOTORS],
                   const tilt_snap_t *tf, const tilt_snap_t *tr,
                   motion_state_e motion, float vbus_v,
-                  safety_result_t *out)
+                  uint32_t warn_only_mask, safety_result_t *out)
 {
     memset(out, 0, sizeof(*out));
+    s_warn_only = warn_only_mask;
     bool moving = moving_state(motion);
 
-    // latch per-motor references at the start of a move (H7 baseline)
+    // H7 baseline: expected angle per motor, integrated from the COMMANDED
+    // velocities — correct for differential (pitch/roll/twist/jog) moves,
+    // where deviation-from-group-mean would false-trip by design.
     if (moving && !c->theta_ref_valid) {
         for (int i = 0; i < SYS_NUM_MOTORS; i++)
             c->theta_ref[i] = motor[i].theta_rad;
         c->theta_ref_valid = true;
+    } else if (moving) {
+        for (int i = 0; i < SYS_NUM_MOTORS; i++)
+            c->theta_ref[i] += v_cmd_prev[i] * dt_s;
     }
     if (!moving) c->theta_ref_valid = false;
 
@@ -57,7 +66,6 @@ void safety_check(safety_ctx_t *c, int64_t now,
             raise(out, SAFE_WARN, SAFE_F_UNDERVOLT);
     }
 
-    float mean_dtheta = 0;
     int online_n = 0;
 
     for (int i = 0; i < SYS_NUM_MOTORS; i++) {
@@ -95,13 +103,17 @@ void safety_check(safety_ctx_t *c, int64_t now,
         }
 
         // ---- H3: overspeed / runaway ---------------------------------------
-        // Trips when a motor exceeds the absolute ceiling, or runs well past
-        // its own command (1.5x + a small floor so tiny commands don't
-        // false-trip on noise). N consecutive samples required.
+        // Compared against a command ENVELOPE that decays at a plausible
+        // decel rate, so a motor coasting down after its command dropped to
+        // zero (end of pawl-unload, entry to leveling) is not a "runaway" —
+        // but sustained/growing speed with no command still trips.
         float cmd = fabsf(v_cmd_prev[i]);
+        float env = c->cmd_env[i] - 8.0f * dt_s;    // decay ~2x a_stop
+        if (cmd > env) env = cmd;
+        c->cmd_env[i] = env;
         float vel = fabsf(m->vel_rad_s);
         bool over = vel > c->vel_abs_max ||
-                    (vel > cmd * c->overspeed_factor + 0.3f);
+                    (vel > env * c->overspeed_factor + 0.3f);
         if (over) {
             if (++c->overspeed_count[i] >= c->overspeed_samples)
                 raise(out, SAFE_TRIP, SAFE_F_OVERSPEED);
@@ -109,15 +121,13 @@ void safety_check(safety_ctx_t *c, int64_t now,
             c->overspeed_count[i] = 0;
         }
 
-        mean_dtheta += m->theta_rad - c->theta_ref[i];
         online_n++;
     }
 
-    // ---- H7: corner desync (relative progress since motion start) ----------
+    // ---- H7: corner desync (actual vs command-integrated expectation) ------
     if (moving && c->theta_ref_valid && online_n == SYS_NUM_MOTORS) {
-        mean_dtheta /= online_n;
         for (int i = 0; i < SYS_NUM_MOTORS; i++) {
-            float dev = fabsf((motor[i].theta_rad - c->theta_ref[i]) - mean_dtheta);
+            float dev = fabsf(motor[i].theta_rad - c->theta_ref[i]);
             if (dev > c->pos_desync_max_rad)
                 raise(out, SAFE_STOP, SAFE_F_DESYNC);
         }

@@ -14,6 +14,7 @@ void btn_sm_init(btn_sm_t *sm)
     memset(sm, 0, sizeof(*sm));
     sm->debounce_us = 20 * 1000;
     sm->chord_us = 80 * 1000;
+    sm->chord_hold_us = 400 * 1000;   // deliberate hold, not a brush
     sm->hold_us = 600 * 1000;
     sm->repeat_us = 150 * 1000;
 }
@@ -62,34 +63,40 @@ void btn_sm_step(btn_sm_t *sm, bool up, bool mode, bool down, int64_t now)
     }
 
     // ---- chord layer (UP/DOWN only) ----------------------------------------
+    // Both pressed -> motion is cancelled immediately, but CHORD only fires
+    // after both stay held for chord_hold_us (a deliberate gesture).
     for (int i = 0; i < BTN_COUNT; i += 2) {           // BTN_UP, BTN_DOWN
         int other = (i == BTN_UP) ? BTN_DOWN : BTN_UP;
         if (changed[i] && sm->b[i].stable) {
             sm->b[i].press_us = now;
-            if (sm->b[other].pending || sm->b[other].in_chord ||
-                (sm->b[other].stable && sm->chord_active)) {
-                // partner already waiting → chord
+            if (sm->b[other].pending || sm->b[other].in_chord) {
+                // partner waiting -> chord pending, hold timer starts
                 sm->b[i].in_chord = true;
                 sm->b[other].in_chord = true;
                 sm->b[other].pending = false;
                 sm->b[i].pending = false;
-                if (!sm->chord_active) {
-                    sm->chord_active = true;
-                    emit(sm, BTN_UP, BEV_CHORD_UPDOWN, now);
-                }
+                if (sm->chord_start_us == 0) sm->chord_start_us = now;
             } else if (sm->b[other].stable && sm->b[other].reported) {
-                // partner already an active single press → late chord upgrade
+                // partner already an active single press -> cancel its motion
+                // and start the chord hold timer
                 sm->b[i].in_chord = true;
                 sm->b[other].in_chord = true;
                 emit(sm, (btn_id_e)other, BEV_UP, now);
                 sm->b[other].reported = false;
                 sm->b[other].held = false;
-                sm->chord_active = true;
-                emit(sm, BTN_UP, BEV_CHORD_UPDOWN, now);
+                sm->chord_start_us = now;
             } else {
                 sm->b[i].pending = true;               // open chord window
             }
         }
+    }
+
+    // chord hold satisfied -> fire
+    if (!sm->chord_active && sm->chord_start_us != 0 &&
+        sm->b[BTN_UP].in_chord && sm->b[BTN_DOWN].in_chord &&
+        now - sm->chord_start_us >= sm->chord_hold_us) {
+        sm->chord_active = true;
+        emit(sm, BTN_UP, BEV_CHORD_UPDOWN, now);
     }
 
     // chord window expiry → promote pendings to real presses
@@ -116,11 +123,13 @@ void btn_sm_step(btn_sm_t *sm, bool up, bool mode, bool down, int64_t now)
             if (sm->b[i].in_chord) {
                 sm->b[i].in_chord = false;
                 int other = (i == BTN_UP) ? BTN_DOWN : (i == BTN_DOWN ? BTN_UP : -1);
-                if (sm->chord_active &&
-                    (other < 0 || !sm->b[other].in_chord)) {
+                bool partner_still = other >= 0 && sm->b[other].in_chord;
+                if (!partner_still) sm->chord_start_us = 0;
+                if (sm->chord_active && !partner_still) {
                     sm->chord_active = false;
                     emit(sm, BTN_UP, BEV_CHORD_UPDOWN_END, now);
                 }
+                // released before chord_hold: deliberate-gesture abort, no event
                 continue;
             }
             if (sm->b[i].pending) {

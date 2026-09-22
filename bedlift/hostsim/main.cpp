@@ -64,6 +64,14 @@ static safety_ctx_t safety;
 static uint32_t latched_flags = 0;       // shown until fault ack
 static uint32_t warn_flags = 0;          // live warnings (racking etc.)
 
+static const char *motion_state_name(motion_state_e m)
+{
+    static const char *n[] = { "idle", "pwrup", "ready", "unload", "unlock",
+                               "up", "down", "level", "ramp", "settle",
+                               "pwrdn", "FAULT" };
+    return (m >= 0 && m <= MOTION_FAULT) ? n[m] : "?";
+}
+
 static int64_t now_us()
 {
     using namespace std::chrono;
@@ -171,8 +179,11 @@ static void app_step(int64_t t, float dt)
     // a fresh motion attempt from READY re-evaluates; stop-latched flags clear
     if (fsm.state == MOTION_READY && intent != MI_NONE) latched_flags = 0;
 
+    uint32_t warn_only = (app_mode_group(app_mode) != GROUP_DEFAULT)
+                         ? SAFE_F_RACKING : 0;
     safety_result_t sr;
-    safety_check(&safety, t, in, v_cmd_prev, &tf, &tr, fsm.state, vbus, &sr);
+    safety_check(&safety, t, dt, in, v_cmd_prev, &tf, &tr, fsm.state, vbus,
+                 warn_only, &sr);
     warn_flags = (sr.verdict == SAFE_WARN) ? sr.flags : 0;   // live, not latched
     if (sr.verdict == SAFE_TRIP && fsm.state != MOTION_FAULT) {
         // trip order: locks first (pawls = unpowered brake), brake window
@@ -190,6 +201,28 @@ static void app_step(int64_t t, float dt)
     motion_fsm_step(&fsm, t, intent, vec, in, dt, &fsm_out);
     if (fsm.state != MOTION_FAULT) app_apply_outputs(t);
     memcpy(v_cmd_prev, fsm_out.v_cmd, sizeof(v_cmd_prev));
+
+    // console telemetry: sim truth + driver view side by side (2 Hz while
+    // anything is happening, so the UI window and numbers coexist)
+    static int64_t last_spew = 0;
+    bool active = fsm.state != MOTION_IDLE;
+    for (int i = 0; i < SIM_NUM_MOTORS && !active; i++)
+        if (fabsf(sim_motor_vel(i)) > 0.02f) active = true;
+    if (active && t - last_spew > 500000) {
+        last_spew = t;
+        printf("[%s] cmd[%+.2f %+.2f %+.2f %+.2f] simv[%+.2f %+.2f %+.2f %+.2f] "
+               "th[%.2f %.2f %.2f %.2f] h[%.3f %.3f %.3f %.3f] "
+               "tilt F%+.1f/R%+.1f P%+.1f vbus %.1f%s%s\n",
+               motion_state_name(fsm.state),
+               fsm_out.v_cmd[0], fsm_out.v_cmd[1], fsm_out.v_cmd[2], fsm_out.v_cmd[3],
+               sim_motor_vel(0), sim_motor_vel(1), sim_motor_vel(2), sim_motor_vel(3),
+               sim_motor_angle(0), sim_motor_angle(1), sim_motor_angle(2), sim_motor_angle(3),
+               sim_corner_height_m(0), sim_corner_height_m(1),
+               sim_corner_height_m(2), sim_corner_height_m(3),
+               tf.roll_deg, tr.roll_deg,
+               0.5f * (tf.pitch_deg + tr.pitch_deg), vbus,
+               latched_flags ? " LATCHED" : "", warn_flags ? " WARN" : "");
+    }
 }
 
 void setup()
@@ -455,8 +488,106 @@ static int user_func(bool *running)
     return 0;
 }
 
-int main(int, char **)
+// ---- headless screenshot mode: ./hostsim --snap <outdir> -------------------
+static void write_bmp(const char *path, LGFX_Sprite &sp)
 {
+    int w = sp.width(), h = sp.height();
+    int row = (w * 3 + 3) & ~3;
+    int datasz = row * h, filesz = 54 + datasz;
+    uint8_t hdr[54] = { 'B', 'M' };
+    auto put32 = [&](int off, uint32_t v) {
+        hdr[off] = v; hdr[off + 1] = v >> 8; hdr[off + 2] = v >> 16; hdr[off + 3] = v >> 24;
+    };
+    put32(2, filesz); put32(10, 54); put32(14, 40);
+    put32(18, w); put32(22, h);
+    hdr[26] = 1; hdr[28] = 24;
+    put32(34, datasz);
+    FILE *f = fopen(path, "wb");
+    if (!f) return;
+    fwrite(hdr, 1, 54, f);
+    uint8_t *line = (uint8_t *)calloc(1, row);
+    for (int y = h - 1; y >= 0; y--) {
+        for (int x = 0; x < w; x++) {
+            auto c = sp.readPixelRGB(x, y);
+            line[x * 3] = c.b; line[x * 3 + 1] = c.g; line[x * 3 + 2] = c.r;
+        }
+        fwrite(line, 1, row, f);
+    }
+    free(line);
+    fclose(f);
+}
+
+static void snap_all(const char *dir)
+{
+    LGFX_Sprite sp;
+    sp.setColorDepth(16);
+    sp.createSprite(UI_W, UI_H);
+
+    sys_snapshot_t s;
+    memset(&s, 0, sizeof(s));
+    s.now_us = 1000000;
+    for (int i = 0; i < SYS_NUM_MOTORS; i++) {
+        s.motor[i].online = true;
+        s.motor[i].vel_rad_s = 1.9f - 0.1f * i;
+        s.motor[i].torque_nm = 2.2f + 0.3f * i;
+        s.motor[i].temp_c = 24.5f + i;
+        s.motor[i].theta_rad = 10.5f + 0.4f * i;
+        s.motor[i].vbus_v = 24.3f;
+        s.motor[i].last_rx_us = 900000;
+    }
+    s.tilt_front = { 3.5f, -6.2f, true, 900000 };
+    s.tilt_rear = { 3.1f, -2.0f, true, 900000 };
+    s.lipo_soc = 0.82f; s.lipo_v = 3.9f;
+    s.motor_ssr_on = true; s.lock_energized = true;
+    s.sol_budget_frac = 0.72f;
+    s.mode = APP_MODE_LIFT;
+    s.motion = MOTION_MOVING_UP;
+    s.btn_pressed_mask = 1;
+
+    char p[256];
+    auto shoot = [&](const char *name) {
+        ui_render(sp, s);
+        snprintf(p, sizeof(p), "%s/%s.bmp", dir, name);
+        write_bmp(p, sp);
+        printf("wrote %s\n", p);
+    };
+
+    shoot("lift_moving");
+
+    s.motion = MOTION_IDLE; s.motor_ssr_on = false; s.lock_energized = false;
+    s.btn_pressed_mask = 0;
+    for (auto &m : s.motor) m.online = false;
+    shoot("lift_idle");
+
+    s.mode = APP_MODE_PITCH; shoot("pitch");
+    s.mode = APP_MODE_TWIST; shoot("twist");
+    s.mode = APP_MODE_M3; shoot("m3");
+
+    s.mode = APP_MODE_LIFT; s.debug_screen = true;
+    s.motor_ssr_on = true;
+    for (auto &m : s.motor) m.online = true;
+    s.motion = MOTION_MOVING_DOWN;
+    shoot("debug_table");
+
+    s.debug_screen = false;
+    s.motion = MOTION_FAULT;
+    s.safety_flags = SAFE_F_OVERSPEED | SAFE_F_TELEM_LOSS;
+    s.motor_ssr_on = false;
+    shoot("fault");
+
+    s.motion = MOTION_MOVING_UP;
+    s.safety_flags = SAFE_F_RACKING;
+    s.tilt_front = { 2.0f, 8.0f, true, 900000 };
+    s.tilt_rear = { 2.0f, -4.0f, true, 900000 };
+    shoot("racking_warn");
+}
+
+int main(int argc, char **argv)
+{
+    if (argc >= 3 && strcmp(argv[1], "--snap") == 0) {
+        snap_all(argv[2]);
+        return 0;
+    }
     return lgfx::Panel_sdl::main(user_func);
 }
 

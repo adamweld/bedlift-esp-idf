@@ -35,7 +35,8 @@ typedef struct {
 typedef struct {
     // timing (us) — defaults set by btn_sm_init, override after if needed
     int64_t debounce_us;
-    int64_t chord_us;
+    int64_t chord_us;       // window for the two presses to count as one chord
+    int64_t chord_hold_us;  // both must stay held this long before CHORD fires
     int64_t hold_us;
     int64_t repeat_us;
 
@@ -51,6 +52,7 @@ typedef struct {
         bool in_chord;
     } b[BTN_COUNT];
     bool chord_active;
+    int64_t chord_start_us; // both-held-since; 0 = not pending
     bool wake_latch;        // swallow the deep-sleep wake press
 
     btn_event_t q[16];

@@ -35,8 +35,10 @@ typedef struct {
 
     // internal
     int overspeed_count[SYS_NUM_MOTORS];
-    float theta_ref[SYS_NUM_MOTORS];   // latched at motion start for desync
+    float cmd_env[SYS_NUM_MOTORS];     // command envelope (tolerates decel)
+    float theta_ref[SYS_NUM_MOTORS];   // command-integrated expected angle
     bool theta_ref_valid;
+    uint32_t warn_only_mask;           // flags demoted to WARN (mode-dependent)
 } safety_ctx_t;
 
 typedef struct {
@@ -49,12 +51,15 @@ void safety_init(safety_ctx_t *c);
 
 // Inputs: the motor telemetry the FSM also sees, the commanded velocities
 // from the previous cycle, tilt, and the current motion state (arming).
-void safety_check(safety_ctx_t *c, int64_t now_us,
+// warn_only_mask: SAFE_F_* bits that never exceed WARN this cycle — manual
+// and debug modes demote racking so the frame can be driven OUT of a bad
+// mechanical state instead of being blocked by it.
+void safety_check(safety_ctx_t *c, int64_t now_us, float dt_s,
                   const motion_motor_in_t motor[SYS_NUM_MOTORS],
                   const float v_cmd_prev[SYS_NUM_MOTORS],
                   const tilt_snap_t *tilt_front, const tilt_snap_t *tilt_rear,
                   motion_state_e motion, float vbus_v,
-                  safety_result_t *out);
+                  uint32_t warn_only_mask, safety_result_t *out);
 
 #ifdef __cplusplus
 }

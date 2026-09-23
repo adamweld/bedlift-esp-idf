@@ -68,3 +68,6 @@ experiments/*/build
 *~
 
 bedlift/build/
+bedlift/hostsim/build/
+
+.DS_Store

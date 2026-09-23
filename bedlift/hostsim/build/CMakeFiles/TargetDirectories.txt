@@ -1,3 +1,0 @@
-/Users/weld/code/bedlift-esp-idf/bedlift/hostsim/build/CMakeFiles/hostsim.dir
-/Users/weld/code/bedlift-esp-idf/bedlift/hostsim/build/CMakeFiles/edit_cache.dir
-/Users/weld/code/bedlift-esp-idf/bedlift/hostsim/build/CMakeFiles/rebuild_cache.dir

@@ -1,7 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/Users/weld/code/bedlift-esp-idf/bedlift/hostsim/build/cmake_install.cmake"
-	],
-	"Parallel" : false
-}

@@ -24,6 +24,7 @@
 #include "sys_state.h"
 #include "ui_panels.hpp"
 #include "motion_fsm.h"
+#include "bed_geometry.h"
 #include "hazard_checks.h"
 #include "control_law.h"
 
@@ -47,16 +48,30 @@ static bool ui_view = true;              // TAB toggles production UI / bench vi
 static app_mode_e app_mode = APP_MODE_LIFT;
 static bool debug_screen = false;        // triple-click center toggles
 
-// per-mode motion vectors for the up button (down = negated)
-static const float k_vec_up[APP_MODE_COUNT][SIM_NUM_MOTORS] = {
-    MVEC_LIFT_UP,                       // LIFT
-    MVEC_LIFT_UP,                       // SIMPLE (raw up/down, no trim)
-    MVEC_PITCH_POS,                     // PITCH: nose up
-    MVEC_ROLL_POS,                      // ROLL: left side up
-    MVEC_TWIST_POS,                     // TWIST
-    { 1, 0, 0, 0 }, { 0, 1, 0, 0 },    // M1, M2
-    { 0, 0, 1, 0 }, { 0, 0, 0, 1 },    // M3, M4
-};
+// per-mode motion vectors for the up button (down = negated), filled from the
+// single source of truth (bed_geometry.h) by fill_mode_vectors() in main().
+static float k_vec_up[APP_MODE_COUNT][SIM_NUM_MOTORS];
+
+// Fill v[] with one motion axis derived from the geometry table.
+static void axis_vec(float v[SIM_NUM_MOTORS], bed_axis_e ax)
+{
+    for (int i = 0; i < SIM_NUM_MOTORS; i++) v[i] = bed_axis_vec(ax, i);
+}
+
+static void fill_mode_vectors(void)
+{
+    for (int i = 0; i < SIM_NUM_MOTORS; i++) {
+        k_vec_up[APP_MODE_LIFT][i]   = bed_axis_vec(BED_AXIS_LIFT,  i);
+        k_vec_up[APP_MODE_SIMPLE][i] = bed_axis_vec(BED_AXIS_LIFT,  i);
+        k_vec_up[APP_MODE_PITCH][i]  = bed_axis_vec(BED_AXIS_PITCH, i);
+        k_vec_up[APP_MODE_ROLL][i]   = bed_axis_vec(BED_AXIS_ROLL,  i);
+        k_vec_up[APP_MODE_TWIST][i]  = bed_axis_vec(BED_AXIS_TWIST, i);
+        k_vec_up[APP_MODE_M1][i]     = (i == 0) ? 1.0f : 0.0f;
+        k_vec_up[APP_MODE_M2][i]     = (i == 1) ? 1.0f : 0.0f;
+        k_vec_up[APP_MODE_M3][i]     = (i == 2) ? 1.0f : 0.0f;
+        k_vec_up[APP_MODE_M4][i]     = (i == 3) ? 1.0f : 0.0f;
+    }
+}
 
 // APP mode: the motion FSM owns power + choreography, exactly like the target
 static motion_fsm_t fsm;
@@ -172,12 +187,11 @@ static void app_step(int64_t t, float dt)
 
     // safety pass first, exactly like the target's motion_task cycle
     static float v_cmd_prev[SIM_NUM_MOTORS] = {};
-    tilt_snap_t raw_f, raw_r;
-    { float ax, ay, az;
-      sim_accel_read(0, &ax, &ay, &az);
-      raw_f = { atan2f(ay, az) * 57.2958f, atan2f(ax, az) * 57.2958f, true, t };
-      sim_accel_read(1, &ax, &ay, &az);
-      raw_r = { atan2f(ay, az) * 57.2958f, atan2f(ax, az) * 57.2958f, true, t }; }
+    // Tilt straight from the plant geometry (same convention as the real IMU:
+    // +pitch front-high, +roll right-high). Front/rear share the frame pitch;
+    // each gets its own axle roll so the leveling law can de-twist.
+    tilt_snap_t raw_f = { sim_bed_pitch_deg(), sim_bed_roll_front_deg(), true, t };
+    tilt_snap_t raw_r = { sim_bed_pitch_deg(), sim_bed_roll_rear_deg(),  true, t };
     static tilt_snap_t tf = {}, tr = {};
     tilt_filter(&tf, &raw_f, dt, 0.25f);
     tilt_filter(&tr, &raw_r, dt, 0.25f);
@@ -360,10 +374,11 @@ static void apply_button_events()
             case BEV_CHORD_UPDOWN:
                 cmd_v = 0;                         // chord never moves the bed
                 up_held = down_held = false;
+                // enter manual group on PITCH; up/down(SIMPLE) cycles last
                 switch (app_mode_group(app_mode)) {
-                    case GROUP_DEFAULT: app_mode = APP_MODE_SIMPLE; break;
+                    case GROUP_DEFAULT: app_mode = APP_MODE_PITCH; break;
                     case GROUP_MANUAL:  app_mode = APP_MODE_M1; break;
-                    case GROUP_DEBUG:   app_mode = APP_MODE_SIMPLE; break;
+                    case GROUP_DEBUG:   app_mode = APP_MODE_PITCH; break;
                 }
                 break;
             default:
@@ -401,16 +416,9 @@ static void build_snapshot(sys_snapshot_t *s)
         s->motor[i].faults = motors[i].faults;
         s->motor[i].last_rx_us = st.last_rx_us;
     }
-    // tilt via the same math the sensor task will use
-    float ax, ay, az;
-    sim_accel_read(0, &ax, &ay, &az);
-    s->tilt_front = { atan2f(ax, az) * 57.2958f, atan2f(ay, az) * 57.2958f, true, t };
-    // reuse roll/pitch naming: roll from x, pitch from y
-    { float bx, by, bz; sim_accel_read(1, &bx, &by, &bz);
-      s->tilt_rear = { atan2f(bx, bz) * 57.2958f, atan2f(by, bz) * 57.2958f, true, t }; }
-    // swap: tilt struct is {pitch, roll} — fix field order
-    { float r = s->tilt_front.pitch_deg; s->tilt_front.pitch_deg = s->tilt_front.roll_deg; s->tilt_front.roll_deg = r; }
-    { float r = s->tilt_rear.pitch_deg; s->tilt_rear.pitch_deg = s->tilt_rear.roll_deg; s->tilt_rear.roll_deg = r; }
+    // tilt straight from plant geometry (+pitch front-high, +roll right-high)
+    s->tilt_front = { sim_bed_pitch_deg(), sim_bed_roll_front_deg(), true, t };
+    s->tilt_rear  = { sim_bed_pitch_deg(), sim_bed_roll_rear_deg(),  true, t };
 
     s->hall_top = sim_hall_top();
     s->hall_bottom = sim_hall_bottom();
@@ -617,6 +625,18 @@ static void snap_all(const char *dir)
     shoot("banner_1");
     s.now_us = 2600000;          // -> second message + cycle counter
     shoot("banner_2");
+
+    // new bubble-level states -------------------------------------------------
+    s.safety_flags = 0; s.sol_cooldown_s = 0; s.motor[2].temp_c = 25.0f;
+    s.mode = APP_MODE_LIFT; s.motion = MOTION_LEVELING;
+    // level + untwisted within target -> green background, bubbles in center ring
+    s.tilt_front = { 0.3f, -0.4f, true, 900000 };
+    s.tilt_rear  = { 0.2f,  0.3f, true, 900000 };
+    shoot("level_good");
+    // both bubbles beyond the 10 deg outer ring -> rim arrows point to them
+    s.tilt_front = { 6.0f, 18.0f, true, 900000 };
+    s.tilt_rear  = { -5.0f, 14.0f, true, 900000 };
+    shoot("level_offscreen");
 }
 
 // ---- headless leveling experiment: ./hostsim --test-level ------------------
@@ -635,10 +655,11 @@ static int run_level_test()
     safety_init(&safety);
     level_law_init(&level_law);
 
-    const float vec_up[4] = MVEC_LIFT_UP;
-    const float vec_pitch[4] = MVEC_PITCH_POS;
-    const float vec_roll[4] = MVEC_ROLL_POS;
-    const float vec_twist[4] = MVEC_TWIST_POS;
+    float vec_up[4], vec_pitch[4], vec_roll[4], vec_twist[4];
+    axis_vec(vec_up, BED_AXIS_LIFT);
+    axis_vec(vec_pitch, BED_AXIS_PITCH);
+    axis_vec(vec_roll, BED_AXIS_ROLL);
+    axis_vec(vec_twist, BED_AXIS_TWIST);
 
     int64_t t = 0;
     const float dt = 0.001f;
@@ -669,12 +690,8 @@ static int run_level_test()
             in[i].online = t - motors[i].status.last_rx_us < 150000;
             in[i].faults = motors[i].faults;
         }
-        tilt_snap_t raw_f, raw_r;
-        { float ax, ay, az;
-          sim_accel_read(0, &ax, &ay, &az);
-          raw_f = { atan2f(ay, az) * 57.2958f, atan2f(ax, az) * 57.2958f, true, t };
-          sim_accel_read(1, &ax, &ay, &az);
-          raw_r = { atan2f(ay, az) * 57.2958f, atan2f(ax, az) * 57.2958f, true, t }; }
+        tilt_snap_t raw_f = { sim_bed_pitch_deg(), sim_bed_roll_front_deg(), true, t };
+        tilt_snap_t raw_r = { sim_bed_pitch_deg(), sim_bed_roll_rear_deg(),  true, t };
         static tilt_snap_t tf = {}, tr = {};
         tilt_filter(&tf, &raw_f, dt, 0.25f);
         tilt_filter(&tr, &raw_r, dt, 0.25f);
@@ -770,9 +787,10 @@ static int run_travel_test()
     safety_init(&safety);
     level_law_init(&level_law);
 
-    const float vec_up[4] = MVEC_LIFT_UP;
-    const float vec_pitch[4] = MVEC_PITCH_POS;
-    const float vec_twist[4] = MVEC_TWIST_POS;
+    float vec_up[4], vec_pitch[4], vec_twist[4];
+    axis_vec(vec_up, BED_AXIS_LIFT);
+    axis_vec(vec_pitch, BED_AXIS_PITCH);
+    axis_vec(vec_twist, BED_AXIS_TWIST);
 
     int64_t t = 0;
     const float dt = 0.001f;
@@ -803,12 +821,8 @@ static int run_travel_test()
             in[i].online = t - motors[i].status.last_rx_us < 150000;
             in[i].faults = motors[i].faults;
         }
-        tilt_snap_t raw_f, raw_r;
-        { float ax, ay, az;
-          sim_accel_read(0, &ax, &ay, &az);
-          raw_f = { atan2f(ay, az) * 57.2958f, atan2f(ax, az) * 57.2958f, true, t };
-          sim_accel_read(1, &ax, &ay, &az);
-          raw_r = { atan2f(ay, az) * 57.2958f, atan2f(ax, az) * 57.2958f, true, t }; }
+        tilt_snap_t raw_f = { sim_bed_pitch_deg(), sim_bed_roll_front_deg(), true, t };
+        tilt_snap_t raw_r = { sim_bed_pitch_deg(), sim_bed_roll_rear_deg(),  true, t };
         static tilt_snap_t tf = {}, tr = {};
         tilt_filter(&tf, &raw_f, dt, 0.25f);
         tilt_filter(&tr, &raw_r, dt, 0.25f);
@@ -885,6 +899,7 @@ static int run_travel_test()
 
 int main(int argc, char **argv)
 {
+    fill_mode_vectors();
     if (argc >= 2 && strcmp(argv[1], "--test-travel") == 0)
         return run_travel_test();
     if (argc >= 2 && strcmp(argv[1], "--test-level") == 0)

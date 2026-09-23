@@ -26,6 +26,8 @@ void sensors_update(float dt_s);
 typedef struct { float pitch_deg, roll_deg; bool valid; } sensor_tilt_t;
 
 void sensors_get_tilt(sensor_tilt_t *front, sensor_tilt_t *rear);
+// Raw filtered acceleration (g), for orientation calibration. idx 0=front, 1=rear.
+void sensors_get_raw(int idx, float *x, float *y, float *z);
 bool sensors_hall1(void);
 bool sensors_hall2(void);
 

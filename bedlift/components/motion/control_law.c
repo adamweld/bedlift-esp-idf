@@ -1,6 +1,7 @@
 #include <math.h>
 #include <string.h>
 #include "control_law.h"
+#include "bed_geometry.h"   // single source of truth for corner polarity
 
 void level_law_init(level_law_t *l)
 {
@@ -8,7 +9,7 @@ void level_law_init(level_law_t *l)
     l->kp_pitch = 0.15f;
     l->deadband_deg = 0.25f;
     l->v_max = 1.0f;
-    l->done_deg = 1.0f;     // auto-lock target: level + untwisted within 1 deg
+    l->done_deg = LEVEL_TARGET_DEG;  // auto-lock target = the inner ring on the UI
     l->trim_frac = 0.15f;
 }
 
@@ -57,16 +58,20 @@ bool level_control(const level_law_t *l, const tilt_snap_t *front,
     memset(v_out, 0, sizeof(float) * SYS_NUM_MOTORS);
     if (!front->valid || !rear->valid) return false;
 
-    // roll: + = right side high -> raise left / lower right of that pair
+    // Negative feedback along the bed axes (corner polarity from bed_geometry.h):
+    //   +pitch (front high) -> lower front / raise rear:  -kp_pitch * p  * fb[i]
+    //   +roll  (right high) -> lower right / raise left :  -kp_roll  * r  * lr[i]
+    // Front accel drives the FRONT pair's roll, rear accel the REAR pair's —
+    // independent, so this de-twists. Pitch uses the mean of the two sensors.
     float rf = band(front->roll_deg, l->deadband_deg);
     float rr = band(rear->roll_deg, l->deadband_deg);
-    // pitch: + = front high -> lower front pair / raise rear pair
     float p = band(0.5f * (front->pitch_deg + rear->pitch_deg), l->deadband_deg);
 
-    v_out[0] = clampf(with_floor(+l->kp_roll * rf - l->kp_pitch * p), l->v_max);
-    v_out[1] = clampf(with_floor(-l->kp_roll * rf - l->kp_pitch * p), l->v_max);
-    v_out[2] = clampf(with_floor(+l->kp_roll * rr + l->kp_pitch * p), l->v_max);
-    v_out[3] = clampf(with_floor(-l->kp_roll * rr + l->kp_pitch * p), l->v_max);
+    for (int i = 0; i < SYS_NUM_MOTORS; i++) {
+        float r = bed_is_front(i) ? rf : rr;
+        float v = -l->kp_roll * r * bed_lr(i) - l->kp_pitch * p * bed_fb(i);
+        v_out[i] = clampf(with_floor(v), l->v_max);
+    }
 
     return rf == 0 && rr == 0 && p == 0;
 }
@@ -95,8 +100,11 @@ void travel_trim(const level_law_t *l, const tilt_snap_t *front,
     float p = band(0.5f * (front->pitch_deg + rear->pitch_deg), l->deadband_deg);
     float lim = l->trim_frac * v_group_abs;
 
-    trim_out[0] = clampf(+l->kp_roll * rf - l->kp_pitch * p, lim);   // FL
-    trim_out[1] = clampf(-l->kp_roll * rf - l->kp_pitch * p, lim);   // FR
-    trim_out[2] = clampf(+l->kp_roll * rr + l->kp_pitch * p, lim);   // RL
-    trim_out[3] = clampf(-l->kp_roll * rr + l->kp_pitch * p, lim);   // RR
+    // Identical mapping to level_control (bed_geometry.h), clamped to a
+    // fraction of the group speed instead of v_max, and no minimum-speed floor.
+    for (int i = 0; i < SYS_NUM_MOTORS; i++) {
+        float r = bed_is_front(i) ? rf : rr;
+        float v = -l->kp_roll * r * bed_lr(i) - l->kp_pitch * p * bed_fb(i);
+        trim_out[i] = clampf(v, lim);
+    }
 }

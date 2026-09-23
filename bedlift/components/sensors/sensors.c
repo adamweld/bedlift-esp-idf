@@ -93,7 +93,9 @@ esp_err_t sensors_init(const sensors_cfg_t *cfg)
     return ESP_OK;
 }
 
-static void read_one(i2c_master_dev_handle_t d, bool ok, sensor_tilt_t *t,
+static float s_raw[2][3];   // [front/rear][x/y/z], filtered g
+
+static void read_one(int idx, i2c_master_dev_handle_t d, bool ok, sensor_tilt_t *t,
                      bool *seed, float dt)
 {
     if (!ok) { t->valid = false; return; }
@@ -102,11 +104,30 @@ static void read_one(i2c_master_dev_handle_t d, bool ok, sensor_tilt_t *t,
     float x = (int16_t)(b[1] << 8 | b[0]) / ADXL_LSB_PER_G;
     float y = (int16_t)(b[3] << 8 | b[2]) / ADXL_LSB_PER_G;
     float z = (int16_t)(b[5] << 8 | b[4]) / ADXL_LSB_PER_G;
-    float pitch = atan2f(y, z) * 57.2958f;
-    float roll  = atan2f(x, z) * 57.2958f;
+    // filtered raw axes (for orientation calibration)
+    float a = *seed ? dt / (s_cfg.lp_tau_s + dt) : 1.0f;
+    s_raw[idx][0] += a * (x - s_raw[idx][0]);
+    s_raw[idx][1] += a * (y - s_raw[idx][1]);
+    s_raw[idx][2] += a * (z - s_raw[idx][2]);
+    // Bench-calibrated mapping (2026-09-23): vertical is Y; the rear sensor is
+    // rotated 180 deg about X relative to the front (Y and Z inverted, X same).
+    // Pitch lives in Z (nose-up = +pitch); roll lives in X. Roll sign set so
+    // RIGHT rail high = +roll, matching the motor geometry (idx0,idx1 = right,
+    // confirmed at the bench when self-level drove roll the wrong way with the
+    // earlier -x sign). Level-zero offsets captured 2026-09-23 with the frame
+    // externally leveled, subtracted so a level frame reads 0/0.
+    const float PITCH_OFF_FRONT = 4.8f, ROLL_OFF_FRONT = 3.7f;
+    const float PITCH_OFF_REAR  = 3.2f, ROLL_OFF_REAR  = 3.7f;
+    float pitch, roll;
+    if (idx == 0) {                 // front: gravity down = -Y
+        pitch = atan2f(-z, -y) * 57.2958f - PITCH_OFF_FRONT;
+        roll  = atan2f(x, -y) * 57.2958f - ROLL_OFF_FRONT;
+    } else {                        // rear: down = +Y, Z inverted
+        pitch = atan2f(z, y) * 57.2958f - PITCH_OFF_REAR;
+        roll  = atan2f(x, y) * 57.2958f - ROLL_OFF_REAR;
+    }
     if (!*seed) { t->pitch_deg = pitch; t->roll_deg = roll; *seed = true; }
     else {
-        float a = dt / (s_cfg.lp_tau_s + dt);
         t->pitch_deg += a * (pitch - t->pitch_deg);
         t->roll_deg  += a * (roll - t->roll_deg);
     }
@@ -115,14 +136,22 @@ static void read_one(i2c_master_dev_handle_t d, bool ok, sensor_tilt_t *t,
 
 void sensors_update(float dt_s)
 {
-    read_one(s_front, s_front_ok, &s_tf, &s_tf_seed, dt_s);
-    read_one(s_rear, s_rear_ok, &s_tr, &s_tr_seed, dt_s);
+    read_one(0, s_front, s_front_ok, &s_tf, &s_tf_seed, dt_s);
+    read_one(1, s_rear, s_rear_ok, &s_tr, &s_tr_seed, dt_s);
 }
 
 void sensors_get_tilt(sensor_tilt_t *front, sensor_tilt_t *rear)
 {
     if (front) *front = s_tf;
     if (rear) *rear = s_tr;
+}
+
+void sensors_get_raw(int idx, float *x, float *y, float *z)
+{
+    if (idx < 0 || idx > 1) return;
+    if (x) *x = s_raw[idx][0];
+    if (y) *y = s_raw[idx][1];
+    if (z) *z = s_raw[idx][2];
 }
 
 bool sensors_hall1(void) { return gpio_get_level((gpio_num_t)s_cfg.hall1_pin); }

@@ -155,30 +155,53 @@ static void draw_level(LGFX_Sprite &fb, const sys_snapshot_t &s)
     const int pw = UI_W - UI_MODE_W - UI_BTN_W, ph = UI_H - UI_STATUS_H;
     const int cx = px + pw / 2, cy = py + ph / 2;
 
+    // Background: GREEN when the bed is level AND untwisted (both bubbles and
+    // the twist inside the target ring); amber/red when racked; else normal.
+    bool tv = s.tilt_front.valid && s.tilt_rear.valid;
+    float pitch = 0.5f * (s.tilt_front.pitch_deg + s.tilt_rear.pitch_deg);
     float rack = fabsf(s.tilt_front.roll_deg - s.tilt_rear.roll_deg);
-    if (rack > RACK_WARN_DEG) {
+    bool good = tv &&
+                fabsf(s.tilt_front.roll_deg) < LEVEL_TARGET_DEG &&
+                fabsf(s.tilt_rear.roll_deg)  < LEVEL_TARGET_DEG &&
+                fabsf(pitch) < LEVEL_TARGET_DEG &&
+                rack < LEVEL_TARGET_DEG;
+    if (good) {
+        fb.fillRect(px, py, pw, ph, C(fb, 18, 66, 30));            // level: green
+    } else if (rack > RACK_WARN_DEG) {
         uint16_t tint = rack > RACK_TRIP_DEG ? C(fb, 60, 22, 18) : C(fb, 55, 44, 16);
         fb.fillRect(px, py, pw, ph, tint);
     }
 
-    // crosshair + rings: LEVEL_RING_DEG reference, LEVEL_RANGE_DEG full scale
+    // crosshair + rings: inner = target level, outer = full scale
     const float k = (ph / 2 - 6) / LEVEL_RANGE_DEG;   // px per degree
+    const int R = (int)(LEVEL_RANGE_DEG * k);         // outer ring radius (px)
     fb.drawFastHLine(px + 6, cy, pw - 12, COL_LINE(fb));
     fb.drawFastVLine(cx, py + 6, ph - 12, COL_LINE(fb));
-    fb.drawCircle(cx, cy, (int)(LEVEL_RING_DEG * k), COL_LINE(fb));
-    fb.drawCircle(cx, cy, (int)(LEVEL_RANGE_DEG * k), COL_LINE(fb));
+    fb.drawCircle(cx, cy, (int)(LEVEL_TARGET_DEG * k), COL_LINE(fb));
+    fb.drawCircle(cx, cy, R, COL_LINE(fb));
 
+    // On-screen a bubble is a disc; beyond the outer ring it becomes an arrow
+    // at the rim pointing toward where the bubble actually is.
     auto bubble = [&](const tilt_snap_t &t, uint16_t col, bool fill) {
         if (!t.valid) return;
         float bx = t.roll_deg * k, by = t.pitch_deg * k;
-        float lim = (LEVEL_RANGE_DEG + 2.0f) * k;
-        if (bx > lim) bx = lim;
-        if (bx < -lim) bx = -lim;
-        if (by > lim) by = lim;
-        if (by < -lim) by = -lim;
-        if (fill) fb.fillCircle(cx + (int)bx, cy + (int)by, 5, col);
-        else fb.drawCircle(cx + (int)bx, cy + (int)by, 5, col);
-        fb.drawCircle(cx + (int)bx, cy + (int)by, 5, col);
+        float r = sqrtf(bx * bx + by * by);
+        if (r <= R || r < 1.0f) {
+            if (fill) fb.fillCircle(cx + (int)bx, cy + (int)by, 5, col);
+            else      fb.drawCircle(cx + (int)bx, cy + (int)by, 5, col);
+            fb.drawCircle(cx + (int)bx, cy + (int)by, 5, col);
+            return;
+        }
+        float ux = bx / r, uy = by / r;              // outward unit vector
+        float wx = -uy, wy = ux;                     // perpendicular
+        int tx = cx + (int)(ux * R),        ty = cy + (int)(uy * R);
+        int mx = cx + (int)(ux * (R - 10)), my = cy + (int)(uy * (R - 10));
+        if (fill)
+            fb.fillTriangle(tx, ty, mx + (int)(wx * 6), my + (int)(wy * 6),
+                            mx - (int)(wx * 6), my - (int)(wy * 6), col);
+        else
+            fb.drawTriangle(tx, ty, mx + (int)(wx * 6), my + (int)(wy * 6),
+                            mx - (int)(wx * 6), my - (int)(wy * 6), col);
     };
     bubble(s.tilt_front, COL_ACCENT(fb), true);          // front: filled
     bubble(s.tilt_rear, C(fb, 235, 160, 90), false);     // rear: outline
@@ -233,10 +256,12 @@ static void draw_buttons(LGFX_Sprite &fb, const sys_snapshot_t &s)
     } else if (s.mode == APP_MODE_LIFT) {
         hints[0] = "UP"; hints[1] = "LEVEL"; hints[2] = "DOWN";
     } else {
+        // ROLL up-button raises the RIGHT rail (idx0,idx1 = +lr); label matches
+        // the motion, not the old "LEFT+" which read backwards on the bench.
         static const char *axis_up[APP_MODE_COUNT] =
-            { "", "UP", "NOSE+", "LEFT+", "TW+", "M1+", "M2+", "M3+", "M4+" };
+            { "", "UP", "NOSE+", "RIGHT+", "TW+", "M1+", "M2+", "M3+", "M4+" };
         static const char *axis_dn[APP_MODE_COUNT] =
-            { "", "DOWN", "NOSE-", "LEFT-", "TW-", "M1-", "M2-", "M3-", "M4-" };
+            { "", "DOWN", "NOSE-", "RIGHT-", "TW-", "M1-", "M2-", "M3-", "M4-" };
         hints[0] = axis_up[s.mode]; hints[1] = "NEXT"; hints[2] = axis_dn[s.mode];
     }
 

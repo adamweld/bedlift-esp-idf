@@ -22,17 +22,10 @@ typedef enum {
     MI_LEVEL,
 } motion_intent_e;
 
-// Direction vectors (+ = up). Bench-verified physical corner layout
-// (2026-09-22), logical index -> corner:
-//   idx0 = M1 = front-right   idx1 = M2 = back-right
-//   idx2 = M3 = back-left     idx3 = M4 = front-left
-// The FSM multiplies the slewed group velocity by the vector; any negative
-// component routes through the pawl-unload path.
-#define MVEC_LIFT_UP    { +1, +1, +1, +1 }
-#define MVEC_LIFT_DOWN  { -1, -1, -1, -1 }
-#define MVEC_PITCH_POS  { +1, -1, -1, +1 }   // front up (M1,M4), rear down — verified
-#define MVEC_ROLL_POS   { -1, -1, +1, +1 }   // left up (M3,M4), right down — flipped per bench
-#define MVEC_TWIST_POS  { +1, 0, -1, 0 }     // M1 up, M3 down, M2/M4 hold
+// Motion direction vectors are NOT defined here — they derive from the single
+// source of truth in bed_geometry.h (bed_axis_vec(BED_AXIS_*, i)). The FSM
+// multiplies the slewed group velocity by the caller-supplied vector; any
+// negative component routes through the pawl-unload path.
 
 typedef struct {
     float theta_rad;    // cumulative angle (+ = up)

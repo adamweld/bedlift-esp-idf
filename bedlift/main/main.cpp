@@ -26,6 +26,7 @@
 #include "state_store.h"
 #include "buttons_sm.h"
 #include "motion_fsm.h"
+#include "bed_geometry.h"
 #include "control_law.h"
 #include "hazard_checks.h"
 #include "ui_panels.hpp"
@@ -51,11 +52,25 @@ static volatile bool s_debug_screen = false;
 static volatile bool s_up = false, s_down = false, s_level_held = false;
 static volatile uint32_t s_latched = 0;
 
-static const float k_vec_up[APP_MODE_COUNT][SYS_NUM_MOTORS] = {
-    MVEC_LIFT_UP, MVEC_LIFT_UP,                 // LIFT, SIMPLE (both all-up)
-    MVEC_PITCH_POS, MVEC_ROLL_POS, MVEC_TWIST_POS,
-    { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 0, 0, 1, 0 }, { 0, 0, 0, 1 },
-};
+// Per-mode "up" vector, filled at boot from bed_geometry.h (the single source
+// of truth). LIFT/SIMPLE = group up; PITCH/ROLL/TWIST = the derived axes;
+// M1..M4 = single-winch jog. build_mode_vectors() runs once in app_main.
+static float k_vec_up[APP_MODE_COUNT][SYS_NUM_MOTORS];
+
+static void build_mode_vectors(void)
+{
+    for (int i = 0; i < SYS_NUM_MOTORS; i++) {
+        k_vec_up[APP_MODE_LIFT][i]   = bed_axis_vec(BED_AXIS_LIFT,  i);
+        k_vec_up[APP_MODE_SIMPLE][i] = bed_axis_vec(BED_AXIS_LIFT,  i);
+        k_vec_up[APP_MODE_PITCH][i]  = bed_axis_vec(BED_AXIS_PITCH, i);
+        k_vec_up[APP_MODE_ROLL][i]   = bed_axis_vec(BED_AXIS_ROLL,  i);
+        k_vec_up[APP_MODE_TWIST][i]  = bed_axis_vec(BED_AXIS_TWIST, i);
+        k_vec_up[APP_MODE_M1][i]     = (i == 0) ? 1.0f : 0.0f;
+        k_vec_up[APP_MODE_M2][i]     = (i == 1) ? 1.0f : 0.0f;
+        k_vec_up[APP_MODE_M3][i]     = (i == 2) ? 1.0f : 0.0f;
+        k_vec_up[APP_MODE_M4][i]     = (i == 3) ? 1.0f : 0.0f;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // boot: force power gates low before anything else (H9 fail-safe posture)
@@ -131,10 +146,13 @@ static void apply_btn_event(const btn_event_t *e)
             break;
         case BEV_CHORD_UPDOWN:
             s_up = s_down = false;
+            // Enter the manual group on PITCH; cycle order is
+            // PITCH -> ROLL -> TWIST -> UP/DOWN(SIMPLE) -> PITCH, so the raw
+            // no-feedback escape hatch sits last, after twist.
             switch (app_mode_group(s_mode)) {
-                case GROUP_DEFAULT: s_mode = APP_MODE_SIMPLE; break;
+                case GROUP_DEFAULT: s_mode = APP_MODE_PITCH; break;
                 case GROUP_MANUAL:  s_mode = APP_MODE_M1; break;
-                case GROUP_DEBUG:   s_mode = APP_MODE_SIMPLE; break;
+                case GROUP_DEBUG:   s_mode = APP_MODE_PITCH; break;
             }
             break;
         default: break;
@@ -178,10 +196,22 @@ static void button_task(void *arg)
 static void sensor_task(void *arg)
 {
     TickType_t last = xTaskGetTickCount();
+    int64_t last_log = 0;
     for (;;) {
         sensors_update(0.02f);
         sensor_tilt_t f, r;
         sensors_get_tilt(&f, &r);
+
+        // raw accel readout at 2 Hz — for the orientation tilt test
+        int64_t now = esp_timer_get_time();
+        if (now - last_log > 500000) {
+            last_log = now;
+            float fx, fy, fz, rx, ry, rz;
+            sensors_get_raw(0, &fx, &fy, &fz);
+            sensors_get_raw(1, &rx, &ry, &rz);
+            ESP_LOGI("acc", "FRONT x%+.2f y%+.2f z%+.2f | REAR x%+.2f y%+.2f z%+.2f",
+                     fx, fy, fz, rx, ry, rz);
+        }
         tilt_snap_t tf = { f.pitch_deg, f.roll_deg, f.valid, esp_timer_get_time() };
         tilt_snap_t tr = { r.pitch_deg, r.roll_deg, r.valid, esp_timer_get_time() };
         state_set_tilt(true, &tf);
@@ -391,6 +421,7 @@ static void display_init(void)
 extern "C" void app_main(void)
 {
     outputs_safe();
+    build_mode_vectors();
     ESP_LOGI(TAG, "boot: outputs safe; wake %d; MOTION_ARMED=%d",
              (int)esp_sleep_get_wakeup_cause(), MOTION_ARMED);
 

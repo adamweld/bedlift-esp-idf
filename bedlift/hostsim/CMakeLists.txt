@@ -52,3 +52,17 @@ target_include_directories(hostsim PRIVATE
 find_package(SDL2 REQUIRED COMPONENTS SDL2)
 target_link_libraries(hostsim PRIVATE SDL2::SDL2)
 target_compile_features(hostsim PUBLIC cxx_std_17)
+
+# -- geometry / polarity regression test (no SDL, no sim, no cybergear) -------
+# Guards the single source of truth in bed_geometry.h. Fast, always builds.
+enable_testing()
+add_executable(geomtest
+    tests/test_geometry.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../components/motion/control_law.c
+)
+target_include_directories(geomtest PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../components/motion/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../components/state/include
+)
+target_compile_features(geomtest PUBLIC cxx_std_17)
+add_test(NAME geometry COMMAND geomtest)

@@ -3,9 +3,11 @@
 
 // Leveling control law (pure). Front and rear tilt sensors act on their own
 // motor pairs (the frame twists — that is why the rear sensor exists):
-//   front roll  -> FL vs FR differential
-//   rear roll   -> RL vs RR differential
+//   front roll  -> front pair left/right differential
+//   rear roll   -> rear pair left/right differential
 //   mean pitch  -> front pair vs rear pair
+// Corner polarity (which index is which corner) comes entirely from
+// bed_geometry.h — this file assumes nothing about the layout.
 // P-control with a deadband; conservative gains, tuned in Phase C.
 
 #include "sys_state.h"
@@ -26,7 +28,7 @@ typedef struct {
 void level_law_init(level_law_t *l);
 
 // Returns true when all three errors are inside the deadband (converged).
-// v_out: per-motor velocity, order FL FR RL RR, + = up.
+// v_out: per-motor velocity indexed by logical motor (see bed_geometry.h), + = up.
 bool level_control(const level_law_t *l, const tilt_snap_t *front,
                    const tilt_snap_t *rear, float v_out[SYS_NUM_MOTORS]);
 

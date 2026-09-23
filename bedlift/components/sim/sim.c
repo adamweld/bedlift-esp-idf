@@ -2,8 +2,10 @@
 #include <string.h>
 #include "sim.h"
 #include "cybergear.h"
+#include "bed_geometry.h"   // corner layout: idx0=FR idx1=BR idx2=FL idx3=BL
 
-// Motor CAN ids in logical corner order: 0=FL, 1=FR, 2=RL, 3=RR
+// Motor CAN ids indexed by logical motor (M1=idx0..M4=idx3): M1=1,M2=4,M3=3,M4=2.
+// This is the CAN bus address map only — corner geometry lives in bed_geometry.h.
 static const uint8_t k_can_ids[SIM_NUM_MOTORS] = { 0x01, 0x04, 0x03, 0x02 };
 
 #define BED_TRACK_M 1.2f   // left-right corner spacing
@@ -349,21 +351,33 @@ static float corner_height(int i)
 
 float sim_corner_height_m(int i) { return corner_height(i); }
 
-float sim_bed_roll_front_deg(void)
+// Tilt from corner heights, mapping each motor to its corner via the single
+// source of truth (bed_geometry.h). + roll = right high, + pitch = front high,
+// matching the IMU calibration — so the sim exercises the SAME polarity the
+// control law assumes. `front_pair`: true = front axle only, false = rear.
+static float roll_from_corners(bool front_pair)
 {
-    return atan2f(corner_height(1) - corner_height(0), BED_TRACK_M) * 57.2958f;
+    float right = 0, left = 0;
+    for (int i = 0; i < SIM_NUM_MOTORS; i++) {
+        if (bed_is_front(i) != front_pair) continue;
+        if (bed_lr(i) > 0) right = corner_height(i);
+        else               left  = corner_height(i);
+    }
+    return atan2f(right - left, BED_TRACK_M) * 57.2958f;
 }
 
-float sim_bed_roll_rear_deg(void)
-{
-    return atan2f(corner_height(3) - corner_height(2), BED_TRACK_M) * 57.2958f;
-}
+float sim_bed_roll_front_deg(void) { return roll_from_corners(true); }
+float sim_bed_roll_rear_deg(void)  { return roll_from_corners(false); }
 
 float sim_bed_pitch_deg(void)
 {
-    float front = 0.5f * (corner_height(0) + corner_height(1));
-    float rear  = 0.5f * (corner_height(2) + corner_height(3));
-    return atan2f(front - rear, BED_LENGTH_M) * 57.2958f;
+    float front = 0, rear = 0;
+    int nf = 0, nr = 0;
+    for (int i = 0; i < SIM_NUM_MOTORS; i++) {
+        if (bed_fb(i) > 0) { front += corner_height(i); nf++; }
+        else               { rear  += corner_height(i); nr++; }
+    }
+    return atan2f(front / nf - rear / nr, BED_LENGTH_M) * 57.2958f;
 }
 
 static float noise(void)

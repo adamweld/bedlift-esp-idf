@@ -20,8 +20,8 @@ extern "C" {
 // (bench-tested); front/rear accel disagreement to 10 deg is safe.
 #define RACK_WARN_DEG 10.0f
 #define RACK_TRIP_DEG 15.0f
-#define LEVEL_RING_DEG 10.0f    // reference ring on the level display
-#define LEVEL_RANGE_DEG 30.0f   // full-scale of the level display
+#define LEVEL_TARGET_DEG 1.0f   // inner ring = "level" target (also leveling auto-complete)
+#define LEVEL_RANGE_DEG 10.0f   // outer ring = full-scale of the level display
 // Beyond this, a tilt reading is not physically the bed (loose/unmounted
 // accel) — treated as a sensor fault, not real tilt/racking. Bench-tested to
 // 20 deg of vehicle tilt, so keep well above that.

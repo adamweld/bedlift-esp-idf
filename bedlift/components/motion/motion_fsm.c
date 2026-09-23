@@ -17,7 +17,7 @@ void motion_fsm_init(motion_fsm_t *f)
     f->t_unload_max_us = 350 * 1000;
     f->t_unlock_us = 100 * 1000;
     f->t_settle_max_us = 1000 * 1000;
-    f->t_keepwarm_us = 5 * 1000 * 1000;   // depower SSRs after 5 s of inaction
+    f->t_keepwarm_us = 2 * 1000 * 1000;   // depower SSRs after 2 s of inaction
     f->state = MOTION_IDLE;
 }
 

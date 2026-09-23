@@ -1,0 +1,37 @@
+# UI icon manifest. One icon per line:
+#
+#   <name> <size> [source]
+#
+# <name>    what the UI code passes to ui_icon_draw()
+# <size>    target size in px (longest side; aspect is kept)
+# source    file in this folder; defaults to <name>.svg, then <name>.png.
+#           Name an alias to use one source at two sizes.
+#
+# SVG (preferred) is rendered directly at <size>, anti-aliased for that exact
+# grid. Tabler icons are drawn on a 24px grid and Material Symbols come in
+# 20/24/40/48px optical sizes, so sizes matching the source grid come out
+# crispest. PNG: shape in the alpha channel (or dark-on-light), downsampled.
+# Colour comes from the UI code; rotation is applied at draw time.
+#
+# Sources: Tabler Icons (MIT), Material Symbols Outlined (Apache-2.0).
+# Regenerated automatically by the build (components/ui/scripts/gen_icons.py).
+
+# mode panel (left column)
+arrows-up-down          64
+view-360-arrow          64
+rotate-360              64
+stretching              64
+box-align-bottom-right  64
+
+# status icons (mode panel)
+bolt                    20
+lock                    20
+lock_open               20
+warning                 20
+
+# button column
+caret-up                30
+caret-down              30
+caret-up-lg             40  caret-up.svg     # LIFT: arrow-only buttons
+caret-down-lg           40  caret-down.svg
+level                   30  focus-2.svg      # LIFT: LEVEL button

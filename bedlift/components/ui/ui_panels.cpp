@@ -5,7 +5,7 @@
 
 struct ModeMeta {
     const char *name;
-    const char *icon;         // name in icons/icons.txt
+    const char *icon;         // name in assets/icons/icons.txt
     int rot;                  // clockwise quarter turns
 };
 
@@ -38,6 +38,10 @@ static inline uint16_t C(LGFX_Sprite &fb, uint8_t r, uint8_t g, uint8_t b)
 #define COL_ERR(fb)     C(fb, 240, 95, 75)
 #define COL_ACCENT(fb)  C(fb, 100, 170, 235)
 
+// At rest (IDLE, power off) the button glyphs step back so the screen is
+// calm to look at.
+static inline bool calm(const sys_snapshot_t &s) { return s.motion == MOTION_IDLE; }
+
 static const char *motion_name(motion_state_e m)
 {
     switch (m) {
@@ -58,100 +62,65 @@ static const char *motion_name(motion_state_e m)
 }
 
 // ---------------------------------------------------------------------------
-// Status bar: motors, locks, tilt, battery-warning (UV only), safety flash
+// Status icons: a fixed row along the bottom of the mode panel, one slot
+// each so nothing shifts when an icon appears.
 // ---------------------------------------------------------------------------
-static void draw_status(LGFX_Sprite &fb, const sys_snapshot_t &s)
+static void draw_status_icons(LGFX_Sprite &fb, const sys_snapshot_t &s, int cy)
 {
-    // stops at the button-column divider; the buttons run full height
-    const int sw = UI_W - UI_BTN_W;
-    fb.fillRect(0, 0, sw, UI_STATUS_H, COL_PANEL(fb));
-    fb.drawFastHLine(0, UI_STATUS_H - 1, sw, COL_LINE(fb));
+    const int slot[3] = { 12, 33, 54 };
 
-    int x = 4;
-    const int cy = UI_STATUS_H / 2 - 1;
-
-    // motors: one cycle glyph. dim = powered off, green = all online,
-    // amber = some offline, red = any motor fault
+    // motor power: bolt. dim = SSR off, green = on and all motors online,
+    // amber = on but some offline, red = any motor fault or 24V undervolt
+    // (there is no pack voltage sense; UV is fault-bit only)
     {
         int online = 0; bool fault = false;
         for (int i = 0; i < SYS_NUM_MOTORS; i++) {
             online += s.motor[i].online;
             fault |= s.motor[i].faults != 0;
         }
+        fault |= (s.safety_flags & SAFE_F_UNDERVOLT) != 0;
         uint16_t c = fault ? COL_ERR(fb)
                      : !s.motor_ssr_on ? COL_DIM(fb)
                      : online == SYS_NUM_MOTORS ? COL_OK(fb) : COL_WARN(fb);
-        ui_icon_draw_centered(fb, "cycle", x + 10, cy + 1, c);
-    }
-    x += 28;
-
-    // locks: padlock body + shackle; open (green outline) when energized
-    {
-        uint16_t c = s.lock_energized ? COL_WARN(fb) : COL_OK(fb);
-        fb.drawRoundRect(x + 3, cy - 7, 10, 7, 3, c);       // shackle
-        if (s.lock_energized) fb.fillRect(x + 3, cy - 4, 6, 4, COL_PANEL(fb));
-        fb.fillRoundRect(x + 1, cy - 1, 14, 9, 2, c);       // body
-    }
-    x += 24;
-
-    // tilt sensors: triangle, colored by validity
-    {
-        bool ok = s.tilt_front.valid && s.tilt_rear.valid;
-        uint16_t c = ok ? COL_OK(fb) : COL_ERR(fb);
-        fb.drawTriangle(x + 7, cy - 7, x, cy + 7, x + 14, cy + 7, c);
-        fb.fillCircle(x + 7, cy + 2, 1, c);
-    }
-    x += 22;
-
-    // Battery: no motor-pack voltage sense exists, so this is purely an
-    // undervoltage warning — an empty red battery, shown only on a UV fault.
-    if (s.safety_flags & SAFE_F_UNDERVOLT) {
-        uint16_t c = COL_ERR(fb);
-        fb.drawRect(x, cy - 5, 18, 10, c);
-        fb.fillRect(x + 18, cy - 2, 2, 4, c);
-        fb.drawLine(x + 3, cy + 3, x + 15, cy - 3, c);   // slash = empty/fault
-        x += 26;
+        ui_icon_draw_centered(fb, "bolt", slot[0], cy, c);
     }
 
-    // safety: warning triangle, only when flags latched (blinks via now_us)
+    // locks: open (amber) while the solenoids are energized, green locked
+    // while powered, grey once the SSR drops (nothing to report at rest)
+    ui_icon_draw_centered(fb, s.lock_energized ? "lock_open" : "lock", slot[1], cy,
+                          s.lock_energized ? COL_WARN(fb)
+                          : s.motor_ssr_on ? COL_OK(fb) : COL_DIM(fb));
+
+    // safety: warning sign while any flag is set, blinking red/amber
     if (s.safety_flags) {
         bool on = ((s.now_us / 400000) & 1) != 0;
-        uint16_t c = on ? COL_ERR(fb) : COL_WARN(fb);
-        fb.fillTriangle(x + 8, cy - 8, x, cy + 7, x + 16, cy + 7, c);
-        fb.setTextColor(COL_PANEL(fb));
-        fb.setTextDatum(lgfx::middle_center);
-        fb.drawString("!", x + 8, cy + 1);
+        ui_icon_draw_centered(fb, "warning", slot[2], cy,
+                              on ? COL_ERR(fb) : COL_WARN(fb));
     }
 }
 
 // ---------------------------------------------------------------------------
-// Mode panel (left column): mode glyph + name + motion state
+// Mode panel (left column): mode glyph, name, motion state, status icons
 // ---------------------------------------------------------------------------
 static void draw_mode(LGFX_Sprite &fb, const sys_snapshot_t &s)
 {
-    const int px = 0, py = UI_STATUS_H;
-    const int pw = UI_MODE_W, ph = UI_H - UI_STATUS_H;
-    fb.drawFastVLine(pw - 1, py, ph, COL_LINE(fb));
+    const int pw = UI_MODE_W;
+    fb.drawFastVLine(pw - 1, 0, UI_H, COL_LINE(fb));
 
-    const int cx = px + pw / 2;
+    const int cx = pw / 2;
     const ModeMeta &meta = k_modes[s.mode < APP_MODE_COUNT ? s.mode : 0];
 
-    ui_icon_draw_centered(fb, meta.icon, cx, py + 34, COL_ACCENT(fb), meta.rot);
+    // top 14px stay clear for the warning banner
+    ui_icon_draw_centered(fb, meta.icon, cx, 14 + 32, COL_ACCENT(fb), meta.rot);
 
     fb.setTextSize(1);
     fb.setTextDatum(lgfx::middle_center);
     fb.setTextColor(COL_TEXT(fb));
-    fb.drawString(meta.name, cx, py + 74);
+    fb.drawString(meta.name, cx, 86);
     fb.setTextColor(s.motion == MOTION_FAULT ? COL_ERR(fb) : COL_DIM(fb));
-    fb.drawString(motion_name(s.motion), cx, py + 86);
+    fb.drawString(motion_name(s.motion), cx, 98);
 
-    // solenoid budget bar along the bottom of the panel
-    int bw = pw - 12;
-    fb.drawRect(px + 6, UI_H - 12, bw, 6, COL_LINE(fb));
-    float f = s.sol_budget_frac < 0 ? 0 : s.sol_budget_frac > 1 ? 1 : s.sol_budget_frac;
-    uint16_t bc = f > 0.4f ? COL_OK(fb) : (f > 0.15f ? COL_WARN(fb) : COL_ERR(fb));
-    fb.fillRect(px + 7, UI_H - 11, (int)((bw - 2) * f), 4, bc);
-    // cooldown countdown lives in the bottom warning banner
+    draw_status_icons(fb, s, UI_H - 14);
 }
 
 // ---------------------------------------------------------------------------
@@ -159,8 +128,8 @@ static void draw_mode(LGFX_Sprite &fb, const sys_snapshot_t &s)
 // ---------------------------------------------------------------------------
 static void draw_level(LGFX_Sprite &fb, const sys_snapshot_t &s)
 {
-    const int px = UI_MODE_W, py = UI_STATUS_H;
-    const int pw = UI_W - UI_MODE_W - UI_BTN_W, ph = UI_H - UI_STATUS_H;
+    const int px = UI_MODE_W, py = 0;
+    const int pw = UI_W - UI_MODE_W - UI_BTN_W, ph = UI_H;
     const int cx = px + pw / 2, cy = py + ph / 2;
 
     // Background: GREEN when the bed is level AND untwisted (both bubbles and
@@ -183,57 +152,77 @@ static void draw_level(LGFX_Sprite &fb, const sys_snapshot_t &s)
         fb.fillRect(px, py, pw, ph, tint);
     }
 
-    // crosshair + rings: inner = target level, outer = full scale
-    const float k = (ph / 2 - 6) / LEVEL_RANGE_DEG;   // px per degree
-    const int R = (int)(LEVEL_RANGE_DEG * k);         // outer ring radius (px)
+    // crosshair + rings: inner = target level, outer = full scale.
+    // Round on the glass, not in pixels: x radii are UI_PX_ASPECT wider.
+    const float A = UI_PX_ASPECT;
+    const int half = (pw < ph ? pw : ph) / 2;
+    const int Rx = half - 8;                          // outer ring, px
+    const int Ry = (int)lroundf(Rx / A);
+    const float kx = Rx / LEVEL_RANGE_DEG, ky = Ry / LEVEL_RANGE_DEG;  // px/deg
+    auto ring = [&](int x, int y, int r, uint16_t col, bool fill) {
+        int rx = (int)lroundf(r * A);
+        if (fill) fb.fillEllipse(x, y, rx, r, col);
+        fb.drawEllipse(x, y, rx, r, col);
+    };
     // crosshair overshoots the outer ring by the same stub on all four sides
-    const int X = R + 5;
-    fb.drawFastHLine(cx - X, cy, 2 * X + 1, COL_LINE(fb));
-    fb.drawFastVLine(cx, cy - X, 2 * X + 1, COL_LINE(fb));
+    const int stub = 5;
+    fb.drawFastHLine(cx - Rx - stub, cy, 2 * (Rx + stub) + 1, COL_LINE(fb));
+    fb.drawFastVLine(cx, cy - Ry - stub, 2 * (Ry + stub) + 1, COL_LINE(fb));
     // center ring is a sighting mark, sized just outside a centered bubble
     // (r=5) so it stays visible; the level test itself uses LEVEL_TARGET_DEG
-    fb.drawCircle(cx, cy, 8, COL_LINE(fb));
-    fb.drawCircle(cx, cy, R, COL_LINE(fb));
+    ring(cx, cy, 8, COL_LINE(fb), false);
+    fb.drawEllipse(cx, cy, Rx, Ry, COL_LINE(fb));
 
     // On-screen a bubble is a disc; beyond the outer ring it becomes an arrow
     // at the rim pointing toward where the bubble actually is.
     auto bubble = [&](const tilt_snap_t &t, uint16_t col, bool fill) {
         if (!t.valid) return;
-        float bx = t.roll_deg * k, by = t.pitch_deg * k;
-        float r = sqrtf(bx * bx + by * by);
-        if (r <= R || r < 1.0f) {
-            if (fill) fb.fillCircle(cx + (int)bx, cy + (int)by, 5, col);
-            else      fb.drawCircle(cx + (int)bx, cy + (int)by, 5, col);
-            fb.drawCircle(cx + (int)bx, cy + (int)by, 5, col);
+        float d = sqrtf(t.roll_deg * t.roll_deg + t.pitch_deg * t.pitch_deg);
+        if (d <= LEVEL_RANGE_DEG || d < 0.01f) {
+            ring(cx + (int)lroundf(t.roll_deg * kx), cy + (int)lroundf(t.pitch_deg * ky),
+                 5, col, fill);
             return;
         }
-        float ux = bx / r, uy = by / r;              // outward unit vector
-        float wx = -uy, wy = ux;                     // perpendicular
-        int tx = cx + (int)(ux * R),        ty = cy + (int)(uy * R);
-        int mx = cx + (int)(ux * (R - 10)), my = cy + (int)(uy * (R - 10));
+        // direction in degree space == direction on the glass
+        float ux = t.roll_deg / d, uy = t.pitch_deg / d;
+        float wx = -uy * 6 * A, wy = ux * 6;         // half-width of the base
+        int tx = cx + (int)(ux * Rx),            ty = cy + (int)(uy * Ry);
+        int mx = cx + (int)(ux * (Rx - 10 * A)), my = cy + (int)(uy * (Ry - 10));
         if (fill)
-            fb.fillTriangle(tx, ty, mx + (int)(wx * 6), my + (int)(wy * 6),
-                            mx - (int)(wx * 6), my - (int)(wy * 6), col);
+            fb.fillTriangle(tx, ty, mx + (int)wx, my + (int)wy,
+                            mx - (int)wx, my - (int)wy, col);
         else
-            fb.drawTriangle(tx, ty, mx + (int)(wx * 6), my + (int)(wy * 6),
-                            mx - (int)(wx * 6), my - (int)(wy * 6), col);
+            fb.drawTriangle(tx, ty, mx + (int)wx, my + (int)wy,
+                            mx - (int)wx, my - (int)wy, col);
     };
+    // legend in the free bottom-left corner outside the ring
+    fb.setTextSize(1);
+    fb.setTextDatum(lgfx::middle_left);
+    fb.setTextColor(COL_DIM(fb));
+    fb.fillCircle(px + 7, UI_H - 18, 3, COL_ACCENT(fb));
+    fb.drawString("F", px + 13, UI_H - 18);
+    fb.drawCircle(px + 7, UI_H - 7, 3, C(fb, 235, 160, 90));
+    fb.drawString("R", px + 13, UI_H - 7);
+
     bubble(s.tilt_front, COL_ACCENT(fb), true);          // front: filled
     bubble(s.tilt_rear, C(fb, 235, 160, 90), false);     // rear: outline
     // numeric R/P/F values live on the debug screen now; bubbles stay clean
 }
 
-// Fault detail replaces the level display when latched
+// Fault detail replaces the level display when latched: header, the latched
+// causes, and how to clear it (the middle button)
 static void draw_fault_detail(LGFX_Sprite &fb, const sys_snapshot_t &s)
 {
-    const int px = UI_MODE_W, py = UI_STATUS_H;
-    const int pw = UI_W - UI_MODE_W - UI_BTN_W, ph = UI_H - UI_STATUS_H;
+    const int px = UI_MODE_W, py = 0;
+    const int pw = UI_W - UI_MODE_W - UI_BTN_W, ph = UI_H;
     fb.fillRect(px, py, pw, ph, C(fb, 45, 18, 15));
+
     fb.setTextSize(1);
-    fb.setTextDatum(lgfx::top_left);
+    fb.setTextDatum(lgfx::middle_left);
+    ui_icon_draw_centered(fb, "warning", px + 14, py + 13, COL_ERR(fb));
     fb.setTextColor(COL_ERR(fb));
-    fb.setCursor(px + 6, py + 4);
-    fb.print("SAFETY FAULT");
+    fb.drawString("SAFETY FAULT", px + 28, py + 13);
+    fb.drawFastHLine(px + 6, py + 26, pw - 12, C(fb, 90, 40, 34));
 
     static const struct { uint32_t bit; const char *name; } names[] = {
         { SAFE_F_UNDERVOLT, "24V undervolt" }, { SAFE_F_MOTOR_FAULT, "motor fault" },
@@ -242,18 +231,20 @@ static void draw_fault_detail(LGFX_Sprite &fb, const sys_snapshot_t &s)
         { SAFE_F_DESYNC, "corner desync" }, { SAFE_F_SOL_DUTY, "solenoid duty" },
         { SAFE_F_TILT_FAIL, "tilt sensor" }, { SAFE_F_OVERTRAVEL, "overtravel" },
     };
-    int y = py + 18;
     fb.setTextColor(COL_TEXT(fb));
+    int y = py + 38;
     for (auto &n : names) {
-        if ((s.safety_flags & n.bit) && y < py + ph - 20) {
-            fb.setCursor(px + 10, y);
-            fb.print(n.name);
-            y += 10;
-        }
+        if (!(s.safety_flags & n.bit)) continue;
+        if (y > py + ph - 30) break;                 // keep the reset hint clear
+        fb.fillCircle(px + 9, y, 2, COL_ERR(fb));
+        fb.drawString(n.name, px + 16, y);
+        y += 13;
     }
+
+    // reset hint
+    fb.drawFastHLine(px + 6, py + ph - 20, pw - 12, C(fb, 90, 40, 34));
     fb.setTextColor(COL_WARN(fb));
-    fb.setCursor(px + 6, py + ph - 12);
-    fb.print("hold CENTER to reset");
+    fb.drawString("hold RESET to clear", px + 6, py + ph - 10);
 }
 
 // ---------------------------------------------------------------------------
@@ -280,21 +271,35 @@ static void draw_buttons(LGFX_Sprite &fb, const sys_snapshot_t &s)
         hints[0] = axis_up[s.mode]; hints[1] = "NEXT"; hints[2] = axis_dn[s.mode];
     }
 
+    // LIFT: the glyphs say it all, so bigger icons and no words
+    const bool icon_only = s.mode == APP_MODE_LIFT && s.motion != MOTION_FAULT;
+    static const char *const lift_icons[3] = { "caret-up-lg", "level", "caret-down-lg" };
+
     for (int i = 0; i < 3; i++) {
         int cy0 = py + i * cellh;
+        // a button with nothing to do draws as a faint outline only
+        if (!hints[i][0]) {
+            fb.drawRoundRect(px + 3, cy0 + 3, UI_BTN_W - 7, cellh - 6, 4, C(fb, 36, 42, 39));
+            continue;
+        }
         bool pressed = (s.btn_pressed_mask >> i) & 1;
         uint16_t bg = pressed ? COL_ACCENT(fb) : COL_PANEL(fb);
-        uint16_t fg = pressed ? COL_PANEL(fb) : COL_TEXT(fb);
+        uint16_t fg = pressed ? COL_PANEL(fb)
+                      : calm(s) ? C(fb, 110, 118, 114) : COL_TEXT(fb);
         fb.fillRoundRect(px + 3, cy0 + 3, UI_BTN_W - 7, cellh - 6, 4, bg);
         fb.drawRoundRect(px + 3, cy0 + 3, UI_BTN_W - 7, cellh - 6, 4, COL_LINE(fb));
 
         int cx = px + UI_BTN_W / 2 - 1, cc = cy0 + cellh / 2;
+        if (icon_only) {
+            ui_icon_draw_centered(fb, lift_icons[i], cx, cc, fg);
+            continue;
+        }
         // glyphs: up arrow / dot / down arrow, plus hint text
         // same layout in every cell: glyph centered at cc-6, label at cc+9
         if (i == 0 && s.motion != MOTION_FAULT)
-            fb.fillTriangle(cx, cc - 11, cx - 8, cc - 1, cx + 8, cc - 1, fg);
+            ui_icon_draw_centered(fb, "caret-up", cx, cc - 6, fg);
         else if (i == 2 && s.motion != MOTION_FAULT)
-            fb.fillTriangle(cx, cc - 1, cx - 8, cc - 11, cx + 8, cc - 11, fg);
+            ui_icon_draw_centered(fb, "caret-down", cx, cc - 6, fg);
         else if (i == 1)
             fb.fillCircle(cx, cc - 6, 3, fg);
 
@@ -308,8 +313,7 @@ static void draw_buttons(LGFX_Sprite &fb, const sys_snapshot_t &s)
 // Debug display (triple-click center): all motors pos / velocity / force
 static void draw_debug_table(LGFX_Sprite &fb, const sys_snapshot_t &s)
 {
-    const int px = UI_MODE_W, py = UI_STATUS_H;
-    const int pw = UI_W - UI_MODE_W - UI_BTN_W;
+    const int px = UI_MODE_W, py = 14;          // below the warning banner
 
     fb.setTextSize(1);
     fb.setTextDatum(lgfx::top_left);
@@ -339,7 +343,7 @@ static void draw_debug_table(LGFX_Sprite &fb, const sys_snapshot_t &s)
     fb.printf("pitch%+.1f tw%+.1f", pitch, twist);
 }
 
-// Bottom banner: warnings and non-emergency errors, spelled out. Cycles when
+// Top banner: warnings and non-emergency errors, spelled out. Cycles when
 // several are active. Emergencies (MOTION_FAULT) use the full fault screen.
 static void draw_warning_banner(LGFX_Sprite &fb, const sys_snapshot_t &s)
 {
@@ -378,14 +382,14 @@ static void draw_warning_banner(LGFX_Sprite &fb, const sys_snapshot_t &s)
 
     const int bh = 14;
     const int bw = UI_W - UI_BTN_W;
-    fb.fillRect(0, UI_H - bh, bw, bh, C(fb, 82, 60, 14));
-    fb.drawFastHLine(0, UI_H - bh, bw, COL_WARN(fb));
+    fb.fillRect(0, 0, bw, bh, C(fb, 82, 60, 14));
+    fb.drawFastHLine(0, bh - 1, bw, COL_WARN(fb));
 
     int idx = (int)((s.now_us / 1500000) % n);
     fb.setTextSize(1);
     fb.setTextDatum(lgfx::middle_left);
     fb.setTextColor(C(fb, 250, 214, 140));
-    fb.drawString(msgs[idx], 5, UI_H - bh / 2);
+    fb.drawString(msgs[idx], 5, bh / 2);
     if (n > 1) {
         char cnt[16];
         // single digits by construction (max 6 messages); % keeps GCC's
@@ -394,14 +398,13 @@ static void draw_warning_banner(LGFX_Sprite &fb, const sys_snapshot_t &s)
                  (unsigned)(idx + 1) % 10, (unsigned)n % 10);
         fb.setTextDatum(lgfx::middle_right);
         fb.setTextColor(C(fb, 190, 160, 100));
-        fb.drawString(cnt, bw - 4, UI_H - bh / 2);
+        fb.drawString(cnt, bw - 4, bh / 2);
     }
 }
 
 void ui_render(LGFX_Sprite &fb, const sys_snapshot_t &s)
 {
     fb.fillScreen(COL_BG(fb));
-    draw_status(fb, s);
     draw_mode(fb, s);
     // full fault screen only for a latched FAULT; warnings keep the level
     // display (racking tint + blinking status triangle carry the message)

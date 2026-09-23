@@ -471,6 +471,7 @@ extern "C" void app_main(void)
     s_fsm.theta_unload = THETA_UNLOAD_RAD;    // rotation above the latch to unseat
     s_fsm.t_unload_max_us = (int64_t)T_UNLOAD_TIMEOUT_MS * 1000;
     s_fsm.t_settle_max_us = (int64_t)T_SETTLE_TIMEOUT_MS * 1000;
+    s_fsm.t_keepwarm_us   = (int64_t)T_READY_KEEPWARM_MS * 1000;
     s_level.v_max      = V_LEVEL_MAX_RAD_S;
     s_safety.vel_abs_max      = VEL_ABS_MAX_RAD_S;
     s_safety.overspeed_factor = OVERSPEED_FACTOR;

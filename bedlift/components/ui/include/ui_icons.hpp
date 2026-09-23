@@ -1,9 +1,9 @@
 #ifndef BEDLIFT_UI_ICONS_HPP
 #define BEDLIFT_UI_ICONS_HPP
 
-// Named UI icons. Source PNGs live in components/ui/icons/, listed with their
-// target size in icons/icons.txt; the build converts them (scripts/
-// gen_icons.py) into 8-bit coverage maps, looked up here by name.
+// Named UI icons. Source PNGs live in bedlift/assets/icons/, listed with
+// their target size in icons.txt there; the build converts them (components/
+// ui/scripts/gen_icons.py) into 8-bit coverage maps, looked up here by name.
 
 #include <cstdint>
 

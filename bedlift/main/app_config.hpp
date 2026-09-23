@@ -58,7 +58,7 @@
 #define T_UNLOAD_TIMEOUT_MS 350
 #define T_SETTLE_TIMEOUT_MS 2000   // headroom for all corners to stall-seat before disable
 #define T_BOOT_SETTLE_MS    300    // SSR-close settle before probing; online-wait gates the rest
-#define T_READY_KEEPWARM_MS 5000   // SSR depowers after 5 s of inaction
+#define T_READY_KEEPWARM_MS 2000   // SSR depowers after 2 s of inaction
 #define MOTOR_LIMIT_SPEED_RADS 10.0f  // speed-mode cap (old proven value); 0 = motor won't spin
 #define MOTOR_LIMIT_CURRENT_A  7.0f
 #define MOTOR_LIMIT_TORQUE_NM  10.0f

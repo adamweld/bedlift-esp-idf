@@ -610,8 +610,12 @@ static void snap_all(const char *dir)
     s.safety_flags = SAFE_F_OVERSPEED | SAFE_F_TELEM_LOSS;
     s.motor_ssr_on = false;
     shoot("fault");
+    s.safety_flags = SAFE_F_OVERSPEED | SAFE_F_TELEM_LOSS | SAFE_F_DESYNC |
+                     SAFE_F_UNDERVOLT | SAFE_F_THERMAL;
+    shoot("fault_many");
 
     s.motion = MOTION_MOVING_UP;
+    s.motor_ssr_on = true; s.lock_energized = true;   // moving = powered
     s.safety_flags = SAFE_F_RACKING;
     s.tilt_front = { 2.0f, 8.0f, true, 900000 };
     s.tilt_rear = { 2.0f, -4.0f, true, 900000 };
@@ -634,9 +638,9 @@ static void snap_all(const char *dir)
     s.tilt_rear  = { 0.2f,  0.3f, true, 900000 };
     shoot("level_good");
     // same tilt at rest -> no green (only shown during motion commands)
-    s.motion = MOTION_IDLE;
+    s.motion = MOTION_IDLE; s.motor_ssr_on = false; s.lock_energized = false;
     shoot("level_rest");
-    s.motion = MOTION_LEVELING;
+    s.motion = MOTION_LEVELING; s.motor_ssr_on = true; s.lock_energized = true;
     // both bubbles beyond the 10 deg outer ring -> rim arrows point to them
     s.tilt_front = { 6.0f, 18.0f, true, 900000 };
     s.tilt_rear  = { -5.0f, 14.0f, true, 900000 };

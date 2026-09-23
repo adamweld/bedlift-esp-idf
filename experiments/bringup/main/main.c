@@ -7,6 +7,7 @@
  */
 
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
 #include <stdlib.h>
 #include "freertos/FreeRTOS.h"
@@ -195,6 +196,59 @@ static int cmd_adxl(int argc, char **argv)
 out:
     i2c_master_bus_rm_device(dev);
     return rc;
+}
+
+// ---------------------------------------------------------------------------
+// acc — both accels side by side (orientation calibration)
+// ---------------------------------------------------------------------------
+static bool acc_read_g(uint8_t addr, float *x, float *y, float *z)
+{
+    i2c_master_dev_handle_t dev;
+    if (adxl_dev(addr, &dev) != ESP_OK) return false;
+    adxl_wr(dev, 0x31, 0x08);            // DATA_FORMAT: full res, +/-2g
+    adxl_wr(dev, 0x2D, 0x08);            // POWER_CTL: measure
+    uint8_t d[6];
+    bool ok = adxl_rd(dev, ADXL_REG_DATA, d, 6) == ESP_OK;
+    if (ok) {
+        *x = (int16_t)(d[1] << 8 | d[0]) / 256.0f;
+        *y = (int16_t)(d[3] << 8 | d[2]) / 256.0f;
+        *z = (int16_t)(d[5] << 8 | d[4]) / 256.0f;
+    }
+    i2c_master_bus_rm_device(dev);
+    return ok;
+}
+
+static int cmd_acc(int argc, char **argv)
+{
+    int secs = (argc > 1) ? atoi(argv[1]) : 0;
+    int64_t end = esp_timer_get_time() + (int64_t)secs * 1000000;
+    printf("      FRONT(0x1D)                        REAR(0x53)\n");
+    do {
+        float fx, fy, fz, rx, ry, rz;
+        bool fo = acc_read_g(ADXL_ADDR_FRONT, &fx, &fy, &fz);
+        bool ro = acc_read_g(ADXL_ADDR_REAR, &rx, &ry, &rz);
+        if (fo && ro) {
+            // plumb = angle of the gravity vector from its dominant axis
+            // (whichever of x/y/z is vertical for this mounting). Both should
+            // be within ~10 deg right now.
+            float fmag = sqrtf(fx*fx + fy*fy + fz*fz);
+            float rmag = sqrtf(rx*rx + ry*ry + rz*rz);
+            float fdom = fmaxf(fabsf(fx), fmaxf(fabsf(fy), fabsf(fz)));
+            float rdom = fmaxf(fabsf(rx), fmaxf(fabsf(ry), fabsf(rz)));
+            float fpl = acosf(fdom / (fmag > 0.01f ? fmag : 1.0f)) * 57.2958f;
+            float rpl = acosf(rdom / (rmag > 0.01f ? rmag : 1.0f)) * 57.2958f;
+            float fp = atan2f(fy, fz) * 57.2958f, frl = atan2f(fx, fz) * 57.2958f;
+            float rp = atan2f(ry, rz) * 57.2958f, rrl = atan2f(rx, rz) * 57.2958f;
+            printf("x%+.2f y%+.2f z%+.2f p%+5.1f r%+5.1f plumb%5.1f%s | "
+                   "x%+.2f y%+.2f z%+.2f p%+5.1f r%+5.1f plumb%5.1f%s\n",
+                   fx, fy, fz, fp, frl, fpl, fpl < 10.0f ? " OK" : " !!",
+                   rx, ry, rz, rp, rrl, rpl, rpl < 10.0f ? " OK" : " !!");
+        } else {
+            printf("read failed (front=%d rear=%d)\n", fo, ro);
+        }
+        if (secs > 0) vTaskDelay(pdMS_TO_TICKS(250));
+    } while (secs > 0 && esp_timer_get_time() < end);
+    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -962,6 +1016,7 @@ static void register_commands(void)
         { .command = "en",      .help = "SSR enables: en <motor|lock|status> [0|1]", .func = &cmd_en },
         { .command = "i2cscan", .help = "Scan the I2C bus (SDA=IO3 SCL=IO4)",        .func = &cmd_i2cscan },
         { .command = "adxl",    .help = "ADXL345: adxl id|read|sdo ...",             .func = &cmd_adxl },
+        { .command = "acc",     .help = "both accels side by side: acc [watch-secs]", .func = &cmd_acc },
         { .command = "i2cfreq", .help = "Get/set bus speed: i2cfreq [khz]",          .func = &cmd_i2cfreq },
         { .command = "i2creg",  .help = "Read regs: i2creg <addr> <reg> [n]",        .func = &cmd_i2creg },
         { .command = "i2cbb",   .help = "Bit-banged read: i2cbb <addr> <reg> [n]",   .func = &cmd_i2cbb },

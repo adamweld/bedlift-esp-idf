@@ -16,11 +16,27 @@ carrier PCB (see the `bedlift-pcb` repo).
 
 ## Prerequisites
 
-- **ESP-IDF v5.5.1** (the version everything is built against):
+- **ESP-IDF v5.5.1** (the version everything is built against), installed
+  with Espressif's installer, [EIM](https://docs.espressif.com/projects/idf-im-ui/en/latest/):
   ```sh
-  git clone --recursive -b v5.5.1 https://github.com/espressif/esp-idf ~/esp/esp-idf
-  ~/esp/esp-idf/install.sh esp32s3
+  brew install python@3.12          # a Python IDF 5.5 supports
+  brew tap espressif/eim
+  brew install eim
+
+  # Put brew's 3.12 first on PATH for this one command so EIM builds
+  # the IDF venv with it. eim_config.toml (repo root) pins v5.5.1 + tools.
+  PATH="$(brew --prefix python@3.12)/libexec/bin:$PATH" \
+    eim install -c eim_config.toml -p ~/.espressif
   ```
+  EIM prints an activation script path at the end (under
+  `~/.espressif/tools/`). Source it in each shell that builds, via the
+  repo wrapper (`activate_idf.ps1` is the Windows equivalent):
+  ```sh
+  source ./activate_idf.sh    # set IDF_ACTIVATE to override the script path
+  ```
+  The script points straight at the venv EIM built, so it keeps working when
+  Homebrew's default `python3` changes. Use `eim list` / `eim select` to
+  manage installed versions and `brew upgrade eim` to update the installer.
 - **Submodule** (LovyanGFX, needed by `bedlift/` and `hostsim/`):
   ```sh
   git submodule update --init bedlift/components/LovyanGFX
@@ -29,15 +45,10 @@ carrier PCB (see the `bedlift-pcb` repo).
 
 ### Dev-laptop notes (macOS)
 
-- This shell's `python3` is Homebrew's (3.14), which IDF 5.5 can't use. The
-  IDF venv (`idf5.5_py3.9_env`) is built against the system `/usr/bin/python3`
-  3.9.6, exposed as `python3` via a one-line shim at `~/.local/idf-shim`.
-  Activate IDF with:
-  ```sh
-  export PATH="$HOME/.local/idf-shim:$PATH"
-  source ~/esp/esp-idf/export.sh
-  ```
-  (If a shell has a *stale* IDF env from an earlier session, open a fresh one.)
+- Homebrew's default `python3` (3.14) is too new for IDF 5.5, so the IDF
+  venv is built on `python@3.12` at install time (above). After that, the
+  Python on `PATH` doesn't matter. If a shell still has a *stale* IDF env
+  from an earlier session, open a fresh one.
 - `xcrun` defaults to the newest installed SDK (e.g. MacOSX27.0), which can be
   newer than the CLT linker supports. `hostsim/CMakeLists.txt` pins the
   `MacOSX.sdk` symlink (the CLT's canonical SDK, which always matches its

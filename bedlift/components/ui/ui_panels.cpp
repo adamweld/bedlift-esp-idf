@@ -38,10 +38,6 @@ static inline uint16_t C(LGFX_Sprite &fb, uint8_t r, uint8_t g, uint8_t b)
 #define COL_ERR(fb)     C(fb, 240, 95, 75)
 #define COL_ACCENT(fb)  C(fb, 100, 170, 235)
 
-// At rest (IDLE, power off) the button glyphs step back so the screen is
-// calm to look at.
-static inline bool calm(const sys_snapshot_t &s) { return s.motion == MOTION_IDLE; }
-
 static const char *motion_name(motion_state_e m)
 {
     switch (m) {
@@ -284,8 +280,7 @@ static void draw_buttons(LGFX_Sprite &fb, const sys_snapshot_t &s)
         }
         bool pressed = (s.btn_pressed_mask >> i) & 1;
         uint16_t bg = pressed ? COL_ACCENT(fb) : COL_PANEL(fb);
-        uint16_t fg = pressed ? COL_PANEL(fb)
-                      : calm(s) ? C(fb, 110, 118, 114) : COL_TEXT(fb);
+        uint16_t fg = pressed ? COL_PANEL(fb) : COL_TEXT(fb);
         fb.fillRoundRect(px + 3, cy0 + 3, UI_BTN_W - 7, cellh - 6, 4, bg);
         fb.drawRoundRect(px + 3, cy0 + 3, UI_BTN_W - 7, cellh - 6, 4, COL_LINE(fb));
 

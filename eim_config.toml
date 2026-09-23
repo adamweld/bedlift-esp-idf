@@ -1,12 +1,12 @@
-path = "/Users/weld/.espressif"
-idf_path = "/Users/weld/.espressif/v5.5.1/esp-idf"
-esp_idf_json_path = "/Users/weld/.espressif/tools"
-tool_download_folder_name = "/Users/weld/.espressif/dist"
-tool_install_folder_name = "/Users/weld/.espressif/tools"
+# EIM install settings for this repo (ESP-IDF v5.5.1). Replay with:
+#   eim install -c eim_config.toml -p ~/.espressif
+# Machine-specific paths are left out; EIM derives them from -p, so the IDF,
+# tools, eim_idf.json and activate_idf_v5.5.1.sh all land under ~/.espressif
+# (where activate_idf.sh looks). The IDF venv is built on Python 3.12 (see
+# README Prerequisites).
 target = ["all"]
 idf_versions = ["v5.5.1"]
 tools_json_file = "tools/tools.json"
-config_file_save_path = "eim_config.toml"
 non_interactive = true
 wizard_all_questions = false
 mirror = "https://dl.espressif.com/github_assets"
@@ -18,8 +18,7 @@ skip_prerequisites_check = false
 cleanup = false
 skip_components_download = false
 python_env_folder_name = "python"
-activation_script_path_override = "/Users/weld/.espressif/tools"
-python_version_override = "python313"
+python_version_override = "python312"
 create_bat_activation_script = false
 
 [idf_features_per_version]

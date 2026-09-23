@@ -633,6 +633,10 @@ static void snap_all(const char *dir)
     s.tilt_front = { 0.3f, -0.4f, true, 900000 };
     s.tilt_rear  = { 0.2f,  0.3f, true, 900000 };
     shoot("level_good");
+    // same tilt at rest -> no green (only shown during motion commands)
+    s.motion = MOTION_IDLE;
+    shoot("level_rest");
+    s.motion = MOTION_LEVELING;
     // both bubbles beyond the 10 deg outer ring -> rim arrows point to them
     s.tilt_front = { 6.0f, 18.0f, true, 900000 };
     s.tilt_rear  = { -5.0f, 14.0f, true, 900000 };

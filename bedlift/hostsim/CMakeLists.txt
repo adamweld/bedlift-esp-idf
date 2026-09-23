@@ -30,6 +30,7 @@ add_executable(hostsim
     ${CMAKE_CURRENT_SOURCE_DIR}/../components/sim/sim.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../components/buttons/buttons_sm.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../components/ui/ui_panels.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../components/ui/ui_icons.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../components/motion/motion_fsm.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../components/motion/control_law.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../components/safety/hazard_checks.c
@@ -43,11 +44,13 @@ target_include_directories(hostsim PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../components/buttons/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../components/state/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../components/ui/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/../components/ui/generated
     ${CMAKE_CURRENT_SOURCE_DIR}/../components/motion/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../components/safety/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../main
 )
+
+include(${CMAKE_CURRENT_SOURCE_DIR}/../components/ui/icons.cmake)
+bedlift_ui_icons(hostsim)
 
 find_package(SDL2 REQUIRED COMPONENTS SDL2)
 target_link_libraries(hostsim PRIVATE SDL2::SDL2)

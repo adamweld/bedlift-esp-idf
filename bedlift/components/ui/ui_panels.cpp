@@ -1,24 +1,25 @@
 #include <cstdio>
 #include <cmath>
 #include "ui_panels.hpp"
-#include "icons_legacy.hpp"   // 1bpp bitmaps from the display experiment
+#include "ui_icons.hpp"
 
 struct ModeMeta {
     const char *name;
-    const uint8_t *icon;      // 64x64 1bpp
+    const char *icon;         // name in icons/icons.txt
+    int rot;                  // clockwise quarter turns
 };
 
 // Order matches app_mode_e. Motor icons: corner-box rotations = FL/FR/RL/RR.
 static const ModeMeta k_modes[APP_MODE_COUNT] = {
-    { "LIFT",   icon_mode_arrows_up_down },
-    { "UP/DOWN", icon_mode_arrows_up_down },   // raw up/down, no feedback
-    { "PITCH",  icon_mode_view_360_arrow_r90 },
-    { "ROLL",   icon_mode_rotate_360_r90 },
-    { "TWIST",  icon_mode_stretching },
-    { "M1 FL",  icon_mode_box_align_bottom_right },
-    { "M2 FR",  icon_mode_box_align_bottom_right_r90 },
-    { "M3 RL",  icon_mode_box_align_bottom_right_r270 },
-    { "M4 RR",  icon_mode_box_align_bottom_right_r180 },
+    { "LIFT",    "arrows-up-down",         0 },
+    { "UP/DOWN", "arrows-up-down",         0 },   // raw up/down, no feedback
+    { "PITCH",   "view-360-arrow",         3 },
+    { "ROLL",    "rotate-360",             3 },
+    { "TWIST",   "stretching",             0 },
+    { "M1 FL",   "box-align-bottom-right", 0 },
+    { "M2 FR",   "box-align-bottom-right", 3 },
+    { "M3 RL",   "box-align-bottom-right", 1 },
+    { "M4 RR",   "box-align-bottom-right", 2 },
 };
 
 // palette
@@ -61,19 +62,26 @@ static const char *motion_name(motion_state_e m)
 // ---------------------------------------------------------------------------
 static void draw_status(LGFX_Sprite &fb, const sys_snapshot_t &s)
 {
-    fb.fillRect(0, 0, UI_W, UI_STATUS_H, COL_PANEL(fb));
-    fb.drawFastHLine(0, UI_STATUS_H - 1, UI_W, COL_LINE(fb));
+    // stops at the button-column divider; the buttons run full height
+    const int sw = UI_W - UI_BTN_W;
+    fb.fillRect(0, 0, sw, UI_STATUS_H, COL_PANEL(fb));
+    fb.drawFastHLine(0, UI_STATUS_H - 1, sw, COL_LINE(fb));
 
     int x = 4;
     const int cy = UI_STATUS_H / 2 - 1;
 
-    // motors: four dots
-    for (int i = 0; i < SYS_NUM_MOTORS; i++) {
-        const motor_snap_t &m = s.motor[i];
-        uint16_t c = !s.motor_ssr_on ? COL_DIM(fb)
-                     : (!m.online ? COL_DIM(fb)
-                        : (m.faults ? COL_ERR(fb) : COL_OK(fb)));
-        fb.fillCircle(x + 4 + (i % 2) * 10, cy - 5 + (i / 2) * 10, 3, c);
+    // motors: one cycle glyph. dim = powered off, green = all online,
+    // amber = some offline, red = any motor fault
+    {
+        int online = 0; bool fault = false;
+        for (int i = 0; i < SYS_NUM_MOTORS; i++) {
+            online += s.motor[i].online;
+            fault |= s.motor[i].faults != 0;
+        }
+        uint16_t c = fault ? COL_ERR(fb)
+                     : !s.motor_ssr_on ? COL_DIM(fb)
+                     : online == SYS_NUM_MOTORS ? COL_OK(fb) : COL_WARN(fb);
+        ui_icon_draw_centered(fb, "cycle", x + 10, cy + 1, c);
     }
     x += 28;
 
@@ -128,7 +136,7 @@ static void draw_mode(LGFX_Sprite &fb, const sys_snapshot_t &s)
     const int cx = px + pw / 2;
     const ModeMeta &meta = k_modes[s.mode < APP_MODE_COUNT ? s.mode : 0];
 
-    fb.drawBitmap(cx - 32, py + 2, meta.icon, 64, 64, COL_ACCENT(fb));
+    ui_icon_draw_centered(fb, meta.icon, cx, py + 34, COL_ACCENT(fb), meta.rot);
 
     fb.setTextSize(1);
     fb.setTextDatum(lgfx::middle_center);
@@ -156,11 +164,14 @@ static void draw_level(LGFX_Sprite &fb, const sys_snapshot_t &s)
     const int cx = px + pw / 2, cy = py + ph / 2;
 
     // Background: GREEN when the bed is level AND untwisted (both bubbles and
-    // the twist inside the target ring); amber/red when racked; else normal.
+    // the twist inside the target ring) during a motion command only — at rest
+    // sensor noise near the threshold made it flicker. Amber/red when racked.
     bool tv = s.tilt_front.valid && s.tilt_rear.valid;
     float pitch = 0.5f * (s.tilt_front.pitch_deg + s.tilt_rear.pitch_deg);
     float rack = fabsf(s.tilt_front.roll_deg - s.tilt_rear.roll_deg);
-    bool good = tv &&
+    bool moving = s.motion == MOTION_MOVING_UP || s.motion == MOTION_MOVING_DOWN ||
+                  s.motion == MOTION_LEVELING;
+    bool good = moving && tv &&
                 fabsf(s.tilt_front.roll_deg) < LEVEL_TARGET_DEG &&
                 fabsf(s.tilt_rear.roll_deg)  < LEVEL_TARGET_DEG &&
                 fabsf(pitch) < LEVEL_TARGET_DEG &&
@@ -175,9 +186,13 @@ static void draw_level(LGFX_Sprite &fb, const sys_snapshot_t &s)
     // crosshair + rings: inner = target level, outer = full scale
     const float k = (ph / 2 - 6) / LEVEL_RANGE_DEG;   // px per degree
     const int R = (int)(LEVEL_RANGE_DEG * k);         // outer ring radius (px)
-    fb.drawFastHLine(px + 6, cy, pw - 12, COL_LINE(fb));
-    fb.drawFastVLine(cx, py + 6, ph - 12, COL_LINE(fb));
-    fb.drawCircle(cx, cy, (int)(LEVEL_TARGET_DEG * k), COL_LINE(fb));
+    // crosshair overshoots the outer ring by the same stub on all four sides
+    const int X = R + 5;
+    fb.drawFastHLine(cx - X, cy, 2 * X + 1, COL_LINE(fb));
+    fb.drawFastVLine(cx, cy - X, 2 * X + 1, COL_LINE(fb));
+    // center ring is a sighting mark, sized just outside a centered bubble
+    // (r=5) so it stays visible; the level test itself uses LEVEL_TARGET_DEG
+    fb.drawCircle(cx, cy, 8, COL_LINE(fb));
     fb.drawCircle(cx, cy, R, COL_LINE(fb));
 
     // On-screen a bubble is a disc; beyond the outer ring it becomes an arrow
@@ -275,17 +290,18 @@ static void draw_buttons(LGFX_Sprite &fb, const sys_snapshot_t &s)
 
         int cx = px + UI_BTN_W / 2 - 1, cc = cy0 + cellh / 2;
         // glyphs: up arrow / dot / down arrow, plus hint text
+        // same layout in every cell: glyph centered at cc-6, label at cc+9
         if (i == 0 && s.motion != MOTION_FAULT)
-            fb.fillTriangle(cx, cc - 9, cx - 8, cc + 1, cx + 8, cc + 1, fg);
+            fb.fillTriangle(cx, cc - 11, cx - 8, cc - 1, cx + 8, cc - 1, fg);
         else if (i == 2 && s.motion != MOTION_FAULT)
-            fb.fillTriangle(cx, cc + 9, cx - 8, cc - 1, cx + 8, cc - 1, fg);
+            fb.fillTriangle(cx, cc - 1, cx - 8, cc - 11, cx + 8, cc - 11, fg);
         else if (i == 1)
-            fb.fillCircle(cx, cc - 5, 3, fg);
+            fb.fillCircle(cx, cc - 6, 3, fg);
 
         fb.setTextSize(1);
         fb.setTextDatum(lgfx::middle_center);
         fb.setTextColor(fg);
-        fb.drawString(hints[i], cx, cc + (i == 1 ? 7 : 12));
+        fb.drawString(hints[i], cx, cc + 9);
     }
 }
 

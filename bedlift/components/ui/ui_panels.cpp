@@ -10,14 +10,15 @@ struct ModeMeta {
 
 // Order matches app_mode_e. Motor icons: corner-box rotations = FL/FR/RL/RR.
 static const ModeMeta k_modes[APP_MODE_COUNT] = {
-    { "LIFT",  icon_mode_arrows_up_down },
-    { "PITCH", icon_mode_view_360_arrow_r90 },
-    { "ROLL",  icon_mode_rotate_360_r90 },
-    { "TWIST", icon_mode_stretching },
-    { "M1 FL", icon_mode_box_align_bottom_right },
-    { "M2 FR", icon_mode_box_align_bottom_right_r90 },
-    { "M3 RL", icon_mode_box_align_bottom_right_r270 },
-    { "M4 RR", icon_mode_box_align_bottom_right_r180 },
+    { "LIFT",   icon_mode_arrows_up_down },
+    { "UP/DOWN", icon_mode_arrows_up_down },   // raw up/down, no feedback
+    { "PITCH",  icon_mode_view_360_arrow_r90 },
+    { "ROLL",   icon_mode_rotate_360_r90 },
+    { "TWIST",  icon_mode_stretching },
+    { "M1 FL",  icon_mode_box_align_bottom_right },
+    { "M2 FR",  icon_mode_box_align_bottom_right_r90 },
+    { "M3 RL",  icon_mode_box_align_bottom_right_r270 },
+    { "M4 RR",  icon_mode_box_align_bottom_right_r180 },
 };
 
 // palette
@@ -56,7 +57,7 @@ static const char *motion_name(motion_state_e m)
 }
 
 // ---------------------------------------------------------------------------
-// Status bar: 6 slots across the top (motors, locks, tilt, LiPo, VBUS, safety)
+// Status bar: motors, locks, tilt, battery-warning (UV only), safety flash
 // ---------------------------------------------------------------------------
 static void draw_status(LGFX_Sprite &fb, const sys_snapshot_t &s)
 {
@@ -94,38 +95,15 @@ static void draw_status(LGFX_Sprite &fb, const sys_snapshot_t &s)
     }
     x += 22;
 
-    // LiPo battery glyph + %
-    {
-        uint16_t c = s.lipo_soc > 0.3f ? COL_OK(fb)
-                     : (s.lipo_soc > 0.15f ? COL_WARN(fb) : COL_ERR(fb));
+    // Battery: no motor-pack voltage sense exists, so this is purely an
+    // undervoltage warning — an empty red battery, shown only on a UV fault.
+    if (s.safety_flags & SAFE_F_UNDERVOLT) {
+        uint16_t c = COL_ERR(fb);
         fb.drawRect(x, cy - 5, 18, 10, c);
         fb.fillRect(x + 18, cy - 2, 2, 4, c);
-        int w = (int)(14.0f * (s.lipo_soc < 0 ? 0 : s.lipo_soc > 1 ? 1 : s.lipo_soc));
-        fb.fillRect(x + 2, cy - 3, w, 6, c);
+        fb.drawLine(x + 3, cy + 3, x + 15, cy - 3, c);   // slash = empty/fault
+        x += 26;
     }
-    x += 26;
-
-    // VBUS: last-read value persists; dimmed when the SSR is off (stale)
-    {
-        float v = 0;
-        for (int i = 0; i < SYS_NUM_MOTORS; i++)
-            if (s.motor[i].vbus_v > v) v = s.motor[i].vbus_v;
-        fb.setTextSize(1);
-        fb.setTextDatum(lgfx::middle_left);
-        if (v > 1.0f) {
-            uint16_t c = v < 21.0f ? (v < 19.5f ? COL_ERR(fb) : COL_WARN(fb))
-                                   : COL_TEXT(fb);
-            if (!s.motor_ssr_on) c = COL_DIM(fb);   // stale but still shown
-            fb.setTextColor(c);
-            char buf[8];
-            snprintf(buf, sizeof(buf), "%4.1fV", v);
-            fb.drawString(buf, x, cy);
-        } else {
-            fb.setTextColor(COL_DIM(fb));
-            fb.drawString("--.-V", x, cy);
-        }
-    }
-    x += 36;
 
     // safety: warning triangle, only when flags latched (blinks via now_us)
     if (s.safety_flags) {
@@ -204,19 +182,7 @@ static void draw_level(LGFX_Sprite &fb, const sys_snapshot_t &s)
     };
     bubble(s.tilt_front, COL_ACCENT(fb), true);          // front: filled
     bubble(s.tilt_rear, C(fb, 235, 160, 90), false);     // rear: outline
-
-    fb.setTextSize(1);
-    fb.setTextDatum(lgfx::top_left);
-    fb.setTextColor(COL_DIM(fb));
-    fb.setCursor(px + 4, py + 3);
-    fb.printf("F%+4.1f", s.tilt_front.roll_deg);
-    fb.setCursor(px + 4, py + 13);
-    fb.printf("R%+4.1f", s.tilt_rear.roll_deg);
-    fb.setTextDatum(lgfx::top_right);
-    char buf[10];
-    snprintf(buf, sizeof(buf), "P%+4.1f",
-             0.5f * (s.tilt_front.pitch_deg + s.tilt_rear.pitch_deg));
-    fb.drawString(buf, px + pw - 4, py + 3);
+    // numeric R/P/F values live on the debug screen now; bubbles stay clean
 }
 
 // Fault detail replaces the level display when latched
@@ -268,9 +234,9 @@ static void draw_buttons(LGFX_Sprite &fb, const sys_snapshot_t &s)
         hints[0] = "UP"; hints[1] = "LEVEL"; hints[2] = "DOWN";
     } else {
         static const char *axis_up[APP_MODE_COUNT] =
-            { "", "NOSE+", "LEFT+", "TW+", "M1+", "M2+", "M3+", "M4+" };
+            { "", "UP", "NOSE+", "LEFT+", "TW+", "M1+", "M2+", "M3+", "M4+" };
         static const char *axis_dn[APP_MODE_COUNT] =
-            { "", "NOSE-", "LEFT-", "TW-", "M1-", "M2-", "M3-", "M4-" };
+            { "", "DOWN", "NOSE-", "LEFT-", "TW-", "M1-", "M2-", "M3-", "M4-" };
         hints[0] = axis_up[s.mode]; hints[1] = "NEXT"; hints[2] = axis_dn[s.mode];
     }
 
@@ -307,21 +273,29 @@ static void draw_debug_table(LGFX_Sprite &fb, const sys_snapshot_t &s)
     fb.setTextSize(1);
     fb.setTextDatum(lgfx::top_left);
     fb.setTextColor(COL_DIM(fb));
-    fb.setCursor(px + 4, py + 4);
-    fb.printf("     pos   vel    F");
-    fb.setCursor(px + 4, py + 13);
-    fb.printf("     rad  rad/s   Nm");
+    fb.setCursor(px + 2, py + 3);
+    fb.printf("    pos   vel     F");   // rad / rad/s / Nm
 
     for (int i = 0; i < SYS_NUM_MOTORS; i++) {
         const motor_snap_t &m = s.motor[i];
-        int y = py + 28 + i * 13;
+        int y = py + 15 + i * 11;
         bool stale = !m.online;
         fb.setTextColor(stale ? COL_DIM(fb)
                               : (m.faults ? COL_ERR(fb) : COL_TEXT(fb)));
-        fb.setCursor(px + 4, y);
-        fb.printf("M%d %+6.1f %+5.2f %+5.1f", i + 1,
+        fb.setCursor(px + 2, y);
+        // tightened: no gaps after M%d; %+6.1f carries its own leading space
+        fb.printf("M%d%+6.1f%+6.1f%+6.1f", i + 1,
                   m.theta_rad, m.vel_rad_s, m.torque_nm);
     }
+
+    // tilt values (moved off the bubble screen) along the bottom
+    float pitch = 0.5f * (s.tilt_front.pitch_deg + s.tilt_rear.pitch_deg);
+    float twist = s.tilt_front.roll_deg - s.tilt_rear.roll_deg;
+    fb.setTextColor(COL_DIM(fb));
+    fb.setCursor(px + 2, py + 62);
+    fb.printf("roll F%+.1f R%+.1f", s.tilt_front.roll_deg, s.tilt_rear.roll_deg);
+    fb.setCursor(px + 2, py + 73);
+    fb.printf("pitch%+.1f tw%+.1f", pitch, twist);
 }
 
 // Bottom banner: warnings and non-emergency errors, spelled out. Cycles when
@@ -331,12 +305,8 @@ static void draw_warning_banner(LGFX_Sprite &fb, const sys_snapshot_t &s)
     char msgs[6][30];
     int n = 0;
 
-    if (s.safety_flags & SAFE_F_UNDERVOLT) {
-        float v = 0;
-        for (int i = 0; i < SYS_NUM_MOTORS; i++)
-            if (s.motor[i].vbus_v > v) v = s.motor[i].vbus_v;
-        snprintf(msgs[n++], 30, "24V LOW: %.1fV", v);
-    }
+    if (s.safety_flags & SAFE_F_UNDERVOLT)
+        snprintf(msgs[n++], 30, "MOTOR BATTERY LOW");   // no voltage sense; fault-bit only
     if (s.safety_flags & SAFE_F_RACKING) {
         float rack = s.tilt_front.roll_deg - s.tilt_rear.roll_deg;
         snprintf(msgs[n++], 30, "FRAME RACKED %+.1f deg", rack);

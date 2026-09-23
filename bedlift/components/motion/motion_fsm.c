@@ -13,7 +13,7 @@ void motion_fsm_init(motion_fsm_t *f)
     f->v_settle = 1.0f;
     f->v_level_max = 1.0f;
     f->seat_torque = 1.5f;
-    f->t_boot_us = 1500 * 1000;
+    f->t_boot_timeout_us = 4000 * 1000;   // failsafe upper bound, not a wait
     f->t_unload_max_us = 350 * 1000;
     f->t_unlock_us = 100 * 1000;
     f->t_settle_max_us = 1000 * 1000;
@@ -68,24 +68,28 @@ void motion_fsm_step(motion_fsm_t *f, int64_t now, motion_intent_e intent,
         if (intent != MI_NONE) enter(f, MOTION_POWER_UP, now);
         break;
 
-    case MOTION_POWER_UP:
+    case MOTION_POWER_UP: {
+        // Poll, don't guess: hold SSR on and probe until every motor answers,
+        // then init once and go. No fixed boot wait — proceed the instant the
+        // motors are up. FAULT only if they don't answer within the failsafe.
         out->ssr_on = true;
-        if (age >= f->t_boot_us) {
-            if (!f->init_done) {
-                out->req_init = true;      // stop -> speed mode -> limits
-                f->init_done = true;
-                break;
-            }
-            // require every motor to be answering before arming motion
-            bool all_online = true;
-            for (int i = 0; i < SYS_NUM_MOTORS; i++)
-                if (!in[i].online) all_online = false;
-            if (all_online) enter(f, MOTION_READY, now);
-            else if (age > f->t_boot_us + 2000000) {
-                // presence probe failed — treat as fault (caller shows which)
-                f->state = MOTION_FAULT;
-            }
+        bool all_online = true;
+        for (int i = 0; i < SYS_NUM_MOTORS; i++)
+            if (!in[i].online) all_online = false;
+
+        if (!all_online) {
+            out->req_ping = true;                     // caller pings (throttled)
+            if (age > f->t_boot_timeout_us) f->state = MOTION_FAULT;
+            break;
         }
+        if (!f->init_done) {
+            out->req_init = true;                     // stop -> mode -> limits
+            f->init_done = true;
+            f->t_entry = now;                         // time the init settle
+            break;
+        }
+        if (age > 60000) enter(f, MOTION_READY, now); // brief settle after init
+    }
         break;
 
     case MOTION_READY: {

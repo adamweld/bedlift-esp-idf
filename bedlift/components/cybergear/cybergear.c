@@ -273,7 +273,20 @@ static esp_err_t cg_rx_feedback(cybergear_motor_t *motor, const twai_message_t *
         case 2: motor->status.state = CYBERGEAR_STATE_RUNNING; break;
         default: err = ESP_ERR_INVALID_RESPONSE; break;
     }
-    motor->status.position    = cybergear_uint_to_float(raw_pos, -CG_POS_RANGE, CG_POS_RANGE);
+    float pos = cybergear_uint_to_float(raw_pos, -CG_POS_RANGE, CG_POS_RANGE);
+    // Multi-turn unwrap: the packed position wraps at ±CG_POS_RANGE. Detect a
+    // wrap as a jump larger than half the span and accumulate. This is the
+    // ONLY way to get cumulative angle — the firmware serves no mechPos read.
+    if (motor->status.pos_init) {
+        float d = pos - motor->status.position;
+        if (d > CG_POS_RANGE) motor->status.pos_wraps--;
+        else if (d < -CG_POS_RANGE) motor->status.pos_wraps++;
+    } else {
+        motor->status.pos_init = true;
+    }
+    motor->status.position = pos;
+    motor->status.position_unwrapped =
+        pos + (float)motor->status.pos_wraps * (2.0f * CG_POS_RANGE);
     motor->status.speed       = cybergear_uint_to_float(raw_vel, -CG_VEL_RANGE, CG_VEL_RANGE);
     motor->status.torque      = cybergear_uint_to_float(raw_tq, -CG_TORQUE_RANGE, CG_TORQUE_RANGE);
     motor->status.temperature = (float)raw_temp / 10.0f;

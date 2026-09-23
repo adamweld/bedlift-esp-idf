@@ -40,6 +40,13 @@
 #define MOTOR_CAN_IDS { 0x01, 0x04, 0x03, 0x02 }
 #define NUM_MOTORS 4
 
+// Per-motor sign mapping bed-frame (+ = UP) <-> motor-frame (CAN). Applied to
+// BOTH commanded velocity and feedback position/velocity, so the whole FSM
+// stays in bed-frame. Bench-verified 2026-09-22: +motor drove the bed DOWN,
+// so all four are inverted. Flip an individual entry if one corner is
+// mirror-mounted relative to the others.
+#define MOTOR_DIR_SIGN { -1.0f, -1.0f, -1.0f, -1.0f }
+
 // --- Motion / control (initial conservative values; tuned in Phase B/C) ----
 #define V_CRUISE_RAD_S      2.0f   // start ~half target; raise in Phase C
 #define A_MAX_RAD_S2        2.0f
@@ -49,9 +56,11 @@
 #define THETA_UNLOAD_RAD    0.15f
 #define T_UNLOAD_TIMEOUT_MS 350
 #define T_SETTLE_TIMEOUT_MS 1000
-#define T_BOOT_SETTLE_MS    1500   // SSR-close -> motors ready; measure in A1
+#define T_BOOT_SETTLE_MS    300    // SSR-close settle before probing; online-wait gates the rest
 #define T_READY_KEEPWARM_MS 5000   // SSR depowers after 5 s of inaction
-#define MOTOR_LIMIT_CURRENT_A 7.0f
+#define MOTOR_LIMIT_SPEED_RADS 10.0f  // speed-mode cap (old proven value); 0 = motor won't spin
+#define MOTOR_LIMIT_CURRENT_A  7.0f
+#define MOTOR_LIMIT_TORQUE_NM  10.0f
 #define TRIM_POS_CLAMP_FRAC  0.10f
 #define TRIM_TILT_CLAMP_FRAC 0.05f
 #define V_LEVEL_MAX_RAD_S    1.0f

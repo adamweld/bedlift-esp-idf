@@ -16,12 +16,15 @@ extern "C" {
 #endif
 
 typedef struct {
-    float position;     // rad, packed-field scale CG_POS_RANGE (see defs note)
-    float speed;        // rad/s, ±30
-    float torque;       // Nm, ±12
-    float temperature;  // °C
+    float position;          // rad, packed-field (wraps at ±CG_POS_RANGE)
+    float position_unwrapped; // rad, cumulative multi-turn (wrap-tracked in RX)
+    int   pos_wraps;         // net wrap count (± CG_POS_RANGE crossings)
+    bool  pos_init;          // false until the first feedback seeds the unwrap
+    float speed;             // rad/s, ±30
+    float torque;            // Nm, ±12
+    float temperature;       // °C
     cybergear_state_e state;
-    int64_t last_rx_us; // esp_timer time of last processed feedback frame
+    int64_t last_rx_us;      // esp_timer time of last processed feedback frame
 } cybergear_status_t;
 
 typedef struct {

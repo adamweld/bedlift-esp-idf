@@ -1,9 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
 
-# This machine's newest CLT SDK (27.0) is incompatible with its linker;
-# pin a known-good one unless the caller overrides SDKROOT.
+# xcrun defaults to the highest-numbered SDK (e.g. 27.0), which can be newer
+# than the installed CLT linker supports. The MacOSX.sdk symlink tracks the
+# CLT's canonical SDK, which always matches its linker — pin that unless the
+# caller overrides SDKROOT.
 if(APPLE AND NOT DEFINED ENV{SDKROOT})
-    set(CMAKE_OSX_SYSROOT /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk)
+    set(CMAKE_OSX_SYSROOT /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk)
 endif()
 
 project(bedlift_hostsim CXX C)

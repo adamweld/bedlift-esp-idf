@@ -22,15 +22,17 @@ typedef enum {
     MI_LEVEL,
 } motion_intent_e;
 
-// Direction vectors (motor order 0=FL 1=FR 2=RL 3=RR; + = up). The FSM
-// multiplies the slewed group velocity by the vector; any negative component
-// routes through the pawl-unload path. Signs are sim conventions — bench
-// verification before M9 decides real-world polarity per corner.
+// Direction vectors (+ = up). Bench-verified physical corner layout
+// (2026-09-22), logical index -> corner:
+//   idx0 = M1 = front-right   idx1 = M2 = back-right
+//   idx2 = M3 = back-left     idx3 = M4 = front-left
+// The FSM multiplies the slewed group velocity by the vector; any negative
+// component routes through the pawl-unload path.
 #define MVEC_LIFT_UP    { +1, +1, +1, +1 }
 #define MVEC_LIFT_DOWN  { -1, -1, -1, -1 }
-#define MVEC_PITCH_POS  { +1, +1, -1, -1 }   // nose up
-#define MVEC_ROLL_POS   { +1, -1, +1, -1 }   // left side up
-#define MVEC_TWIST_POS  { +1, -1, -1, +1 }   // diagonal torsion
+#define MVEC_PITCH_POS  { +1, -1, -1, +1 }   // front up (M1,M4), rear down — verified
+#define MVEC_ROLL_POS   { -1, -1, +1, +1 }   // left up (M3,M4), right down — flipped per bench
+#define MVEC_TWIST_POS  { +1, 0, -1, 0 }     // M1 up, M3 down, M2/M4 hold
 
 typedef struct {
     float theta_rad;    // cumulative angle (+ = up)
@@ -44,6 +46,7 @@ typedef struct {
 typedef struct {
     bool ssr_on;
     bool lock_on;
+    bool req_ping;      // level: probe motors for presence (caller throttles)
     bool req_init;      // rising edge: run stop -> set_mode -> limits
     bool req_enable;    // rising edge: enable all motors
     bool req_disable;   // rising edge: stop/disable all motors
@@ -61,7 +64,7 @@ typedef struct {
     float v_settle;         // settle-onto-pawl drive (positive magnitude)
     float v_level_max;      // clamp on leveling velocities
     float seat_torque;      // |torque| indicating pawl contact
-    int64_t t_boot_us;      // SSR-close -> motors ready
+    int64_t t_boot_timeout_us; // give up waiting for motors -> FAULT (failsafe bound)
     int64_t t_unload_max_us;
     int64_t t_unlock_us;    // solenoid retract dwell
     int64_t t_settle_max_us;

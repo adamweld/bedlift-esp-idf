@@ -27,17 +27,21 @@ carrier PCB (see the `bedlift-pcb` repo).
   ```
 - Host sim only: `brew install sdl2 cmake ninja`
 
-### Dev-laptop quirks (macOS)
+### Dev-laptop notes (macOS)
 
-- `/usr/bin/python3` is a broken Xcode CLT shim on this machine; a working
-  Python 3.13 is shimmed at `~/.local/idf-shim`. Activate IDF with:
+- This shell's `python3` is Homebrew's (3.14), which IDF 5.5 can't use. The
+  IDF venv (`idf5.5_py3.9_env`) is built against the system `/usr/bin/python3`
+  3.9.6, exposed as `python3` via a one-line shim at `~/.local/idf-shim`.
+  Activate IDF with:
   ```sh
-  export PATH="$HOME/.local/idf-shim:/opt/homebrew/bin:$PATH"
+  export PATH="$HOME/.local/idf-shim:$PATH"
   source ~/esp/esp-idf/export.sh
   ```
-- The newest CLT SDK (MacOSX27.0) is incompatible with its own linker;
-  `hostsim/CMakeLists.txt` pins `MacOSX26.5.sdk` automatically. If a host
-  build fails at link on another setup, override with `SDKROOT`.
+  (If a shell has a *stale* IDF env from an earlier session, open a fresh one.)
+- `xcrun` defaults to the newest installed SDK (e.g. MacOSX27.0), which can be
+  newer than the CLT linker supports. `hostsim/CMakeLists.txt` pins the
+  `MacOSX.sdk` symlink (the CLT's canonical SDK, which always matches its
+  linker) automatically — no manual step. Override with `SDKROOT` if needed.
 
 ## Production app (`bedlift/`)
 

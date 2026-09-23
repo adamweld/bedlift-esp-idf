@@ -22,6 +22,10 @@ extern "C" {
 #define RACK_TRIP_DEG 15.0f
 #define LEVEL_RING_DEG 10.0f    // reference ring on the level display
 #define LEVEL_RANGE_DEG 30.0f   // full-scale of the level display
+// Beyond this, a tilt reading is not physically the bed (loose/unmounted
+// accel) — treated as a sensor fault, not real tilt/racking. Bench-tested to
+// 20 deg of vehicle tilt, so keep well above that.
+#define TILT_MAX_VALID_DEG 40.0f
 
 typedef enum {
     MOTION_IDLE = 0,
@@ -44,7 +48,8 @@ typedef enum {
 //   LIFT --chord--> manual [PITCH ROLL TWIST] --chord--> debug [M1..M4]
 //                                 ^-------------chord--------------'
 typedef enum {
-    APP_MODE_LIFT = 0,      // hold up/down to move, hold center to self-level
+    APP_MODE_LIFT = 0,      // hold up/down (travel trim), hold center to self-level
+    APP_MODE_SIMPLE,        // raw up/down, NO feedback (manual group) — escape hatch
     APP_MODE_PITCH,         // front pair vs rear pair
     APP_MODE_ROLL,          // left pair vs right pair
     APP_MODE_TWIST,         // diagonal pairs (frame torsion)

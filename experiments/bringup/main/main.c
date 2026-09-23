@@ -551,6 +551,70 @@ static int cg_drain(int ms)
     return n;
 }
 
+static bool s_tap_on = false;
+static void cg_frame_tap(int dir, const twai_message_t *m);
+
+// Raw SDO read (type 0x11) of ANY index — bypasses the driver's known-index
+// parser so we can probe arbitrary parameters. Returns true on a matching
+// reply, filling val[4] (the value bytes) and the echoed index.
+static bool cg_sdo_read_raw(uint8_t id, uint16_t index, uint8_t val[4],
+                            uint16_t *echo_index)
+{
+    twai_message_t m;
+    memset(&m, 0, sizeof(m));
+    m.extd = 1;
+    m.data_length_code = 8;
+    m.identifier = (0x11u << 24) | ((uint32_t)CG_MASTER_ID << 8) | id;
+    m.data[0] = index & 0xFF;
+    m.data[1] = index >> 8;
+    if (s_tap_on) cg_frame_tap(0, &m);
+    twai_transmit(&m, pdMS_TO_TICKS(50));
+    int64_t end = esp_timer_get_time() + 300000;
+    while (esp_timer_get_time() < end) {
+        if (twai_receive(&m, pdMS_TO_TICKS(50)) != ESP_OK) continue;
+        uint8_t type = (m.identifier >> 24) & 0x1F;
+        uint8_t src = (m.identifier >> 8) & 0xFF;
+        if (type == 0x11 && src == id) {
+            if (s_tap_on) cg_frame_tap(1, &m);
+            if (echo_index) *echo_index = m.data[1] << 8 | m.data[0];
+            memcpy(val, &m.data[4], 4);
+            return true;
+        }
+    }
+    return false;
+}
+
+// Raw SDO write (type 0x12) of a 16-bit value — for echoPara/echoFreHz config.
+static void cg_sdo_write_u16(uint8_t id, uint16_t index, uint16_t val)
+{
+    twai_message_t m;
+    memset(&m, 0, sizeof(m));
+    m.extd = 1;
+    m.data_length_code = 8;
+    m.identifier = (0x12u << 24) | ((uint32_t)CG_MASTER_ID << 8) | id;
+    m.data[0] = index & 0xFF;
+    m.data[1] = index >> 8;
+    m.data[4] = val & 0xFF;
+    m.data[5] = val >> 8;
+    if (s_tap_on) cg_frame_tap(0, &m);
+    twai_transmit(&m, pdMS_TO_TICKS(50));
+}
+
+static char cg_printable(uint8_t c) { return (c >= 0x20 && c < 0x7F) ? c : '.'; }
+
+// Print one raw SDO read as bytes + all plausible interpretations.
+static void cg_print_read(uint16_t idx, const uint8_t v[4], uint16_t echo)
+{
+    uint32_t u; memcpy(&u, v, 4);
+    int32_t s; memcpy(&s, v, 4);
+    float f; memcpy(&f, v, 4);
+    printf("  0x%04X (echo 0x%04X): %02X %02X %02X %02X  u32=%lu i32=%ld "
+           "f32=%g  u16lo=%u  ascii='%c%c%c%c'\n",
+           idx, echo, v[0], v[1], v[2], v[3],
+           (unsigned long)u, (long)s, f, (unsigned)(v[0] | v[1] << 8),
+           cg_printable(v[0]), cg_printable(v[1]), cg_printable(v[2]), cg_printable(v[3]));
+}
+
 // Frame tap: log every driver TX/RX frame the driver actually handles.
 static void cg_frame_tap(int dir, const twai_message_t *m)
 {
@@ -559,7 +623,6 @@ static void cg_frame_tap(int dir, const twai_message_t *m)
         printf("%s%02X", i ? " " : "", m->data[i]);
     printf("]\n");
 }
-static bool s_tap_on = false;
 
 static int cmd_cg(int argc, char **argv)
 {
@@ -579,13 +642,122 @@ static int cmd_cg(int argc, char **argv)
                "  cg clear <id>           clear-fault (type 4, byte0=1)  [A4]\n"
                "  cg vbus <id> [n]        param-read VBUS n times (0x701C) [A2]\n"
                "  cg pos  <id>            mech_pos/rotation/mech_vel/iqf  [B2]\n"
-               "  cg stat <id>            last echo status + fault bits\n");
+               "  cg stat <id>            last echo status + fault bits\n"
+               "  cg rd <id> <hexidx> [n] raw SDO read of ANY index (probe)\n"
+               "  cg ver <id>             read candidate firmware-version strings\n"
+               "  cg scan <id> <a> <b>    raw SDO read every index a..b (hex)\n"
+               "  cg scope <id> [hz]      stream mechPos/rotation/mechVel/VBUS (echoPara)\n"
+               "  cg discover <id> [q]    PARA_STR_INFO type-19 probe (dumps frames)\n");
         return 1;
     }
     if (!s_can_up) { printf("`can up` first\n"); return 1; }
     uint8_t id = strtoul(argv[2], NULL, 0);
     cybergear_motor_t *m = cg_motor(id);
     if (!m) { printf("bad id\n"); return 1; }
+
+    if (!strcmp(argv[1], "rd")) {
+        if (argc < 4) { printf("usage: cg rd <id> <hexidx> [n]\n"); return 1; }
+        uint16_t idx = strtoul(argv[3], NULL, 16);
+        int n = (argc > 4) ? atoi(argv[4]) : 1;
+        for (int i = 0; i < n; i++, idx++) {
+            uint8_t v[4]; uint16_t echo;
+            if (cg_sdo_read_raw(id, idx, v, &echo)) cg_print_read(idx, v, echo);
+            else printf("  0x%04X: no reply\n", idx);
+        }
+        return 0;
+    }
+    if (!strcmp(argv[1], "scan")) {
+        if (argc < 5) { printf("usage: cg scan <id> <a-hex> <b-hex>\n"); return 1; }
+        uint16_t a = strtoul(argv[3], NULL, 16), b = strtoul(argv[4], NULL, 16);
+        for (uint16_t idx = a; idx <= b; idx++) {
+            uint8_t v[4]; uint16_t echo;
+            if (cg_sdo_read_raw(id, idx, v, &echo)) cg_print_read(idx, v, echo);
+        }
+        printf("scan 0x%04X..0x%04X done\n", a, b);
+        return 0;
+    }
+    if (!strcmp(argv[1], "ver")) {
+        // v1.2.1.5 table puts version strings at 0x704A..0x7053; SDK/older
+        // schemes differ. Read a spread and print ASCII — readable chars
+        // reveal which scheme's version index is live on THIS motor.
+        uint16_t cand[] = { 0x704A, 0x704B, 0x704C, 0x704D, 0x704E, 0x704F,
+                            0x7050, 0x7051, 0x7052, 0x7053, 0x7000, 0x2000 };
+        for (unsigned i = 0; i < sizeof(cand) / sizeof(cand[0]); i++) {
+            uint8_t v[4]; uint16_t echo;
+            if (cg_sdo_read_raw(id, cand[i], v, &echo)) cg_print_read(cand[i], v, echo);
+        }
+        return 0;
+    }
+    if (!strcmp(argv[1], "scope")) {
+        // Oscilloscope streaming: configure echoPara1-4 to table indices for
+        // mechPos/rotation/mechVel/VBUS, set echoFreHz, decode the repurposed
+        // type-0x02 frames. Table indices per RE doc (v1.2.1.5) — if they
+        // stream plausible, changing values, this is our mechPos/rotation path.
+        int freq = (argc > 3) ? atoi(argv[3]) : 100;
+        // table index = (SDO addr - 0x7000): mechPos 0x7030=48, rotation
+        // 0x702E=46, mechVel 0x7031=49, VBUS 0x7026=38
+        const uint16_t chans[4] = { 48, 46, 49, 38 };
+        const char *names[4] = { "mechPos", "rotation", "mechVel", "VBUS" };
+        for (int i = 0; i < 4; i++) {
+            cg_sdo_write_u16(id, 0x7000 + i, chans[i]);
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+        cg_sdo_write_u16(id, 0x7004, freq);   // echoFreHz -> start streaming
+        printf("scope on: ch=[mechPos(48) rotation(46) mechVel(49) VBUS(38)] @%dHz\n",
+               freq);
+        printf("        %10s %10s %10s %10s\n", names[0], names[1], names[2], names[3]);
+
+        int64_t end = esp_timer_get_time() + 2500000;
+        int n = 0;
+        twai_message_t rx;
+        while (esp_timer_get_time() < end) {
+            if (twai_receive(&rx, pdMS_TO_TICKS(50)) != ESP_OK) continue;
+            uint8_t type = (rx.identifier >> 24) & 0x1F;
+            uint8_t src = (rx.identifier >> 8) & 0xFF;
+            if (type != CG_TYPE_FEEDBACK || src != id) continue;
+            uint16_t c0 = rx.data[0] | rx.data[1] << 8;
+            uint16_t c1 = rx.data[2] | rx.data[3] << 8;
+            uint16_t c2 = rx.data[4] | rx.data[5] << 8;
+            uint16_t c3 = rx.data[6] | rx.data[7] << 8;
+            if ((n++ % 10) == 0)   // print every 10th frame
+                printf("  raw   %10u %10u %10u %10u  [%02X%02X %02X%02X %02X%02X %02X%02X]\n",
+                       c0, c1, c2, c3, rx.data[0], rx.data[1], rx.data[2], rx.data[3],
+                       rx.data[4], rx.data[5], rx.data[6], rx.data[7]);
+        }
+        cg_sdo_write_u16(id, 0x7004, 0);      // echoFreHz=0 -> stop
+        printf("scope off (%d frames). Turn the shaft during the next run to\n"
+               "see if mechPos/rotation change.\n", n);
+        return 0;
+    }
+    if (!strcmp(argv[1], "discover")) {
+        // PARA_STR_INFO (type 19). Exact request format is undocumented, so
+        // send a best-effort request and dump every frame that comes back.
+        uint8_t q = (argc > 3) ? strtoul(argv[3], NULL, 0) : 0;
+        twai_message_t tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.extd = 1; tx.data_length_code = 8;
+        tx.identifier = (0x13u << 24) | ((uint32_t)q << 16) |
+                        ((uint32_t)CG_MASTER_ID << 8) | id;
+        printf("TX type-19 id=0x%08lX q=%u; listening 800ms...\n",
+               (unsigned long)tx.identifier, q);
+        twai_transmit(&tx, pdMS_TO_TICKS(50));
+        int64_t end = esp_timer_get_time() + 800000;
+        int nframes = 0;
+        twai_message_t rx;
+        while (esp_timer_get_time() < end) {
+            if (twai_receive(&rx, pdMS_TO_TICKS(50)) != ESP_OK) continue;
+            nframes++;
+            printf("  RX id=0x%08lX [", (unsigned long)rx.identifier);
+            for (int i = 0; i < rx.data_length_code; i++)
+                printf("%s%02X", i ? " " : "", rx.data[i]);
+            printf("]  '");
+            for (int i = 0; i < rx.data_length_code; i++)
+                printf("%c", cg_printable(rx.data[i]));
+            printf("'\n");
+        }
+        printf("%d frame(s)\n", nframes);
+        return 0;
+    }
 
     if (!strcmp(argv[1], "stop")) {
         cybergear_set_speed(m, 0.0f);

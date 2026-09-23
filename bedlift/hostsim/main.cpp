@@ -50,6 +50,7 @@ static bool debug_screen = false;        // triple-click center toggles
 // per-mode motion vectors for the up button (down = negated)
 static const float k_vec_up[APP_MODE_COUNT][SIM_NUM_MOTORS] = {
     MVEC_LIFT_UP,                       // LIFT
+    MVEC_LIFT_UP,                       // SIMPLE (raw up/down, no trim)
     MVEC_PITCH_POS,                     // PITCH: nose up
     MVEC_ROLL_POS,                      // ROLL: left side up
     MVEC_TWIST_POS,                     // TWIST
@@ -122,6 +123,8 @@ static void app_apply_outputs(int64_t t)
     ssr_on = fsm_out.ssr_on;                 // reflect into the status header
     lock_on = fsm_out.lock_on;
 
+    if (fsm_out.req_ping)
+        for (auto &m : motors) cybergear_ping(&m);
     if (fsm_out.req_init && !prev.req_init) {
         for (auto &m : motors) {
             cybergear_stop(&m);
@@ -267,7 +270,7 @@ void setup()
 
     btn_sm_init(&btn_sm);
     motion_fsm_init(&fsm);
-    fsm.t_boot_us = 300 * 1000;    // sim motors boot instantly; keep it snappy
+    fsm.t_boot_timeout_us = 2000 * 1000;   // sim motors boot instantly
     safety_init(&safety);
     level_law_init(&level_law);
 }
@@ -332,9 +335,10 @@ static void apply_button_events()
                     t1 = t2; t2 = e.t_us;
                     // single short: cycle within the current group
                     switch (app_mode) {
+                        case APP_MODE_SIMPLE: app_mode = APP_MODE_PITCH; break;
                         case APP_MODE_PITCH: app_mode = APP_MODE_ROLL; break;
                         case APP_MODE_ROLL:  app_mode = APP_MODE_TWIST; break;
-                        case APP_MODE_TWIST: app_mode = APP_MODE_PITCH; break;
+                        case APP_MODE_TWIST: app_mode = APP_MODE_SIMPLE; break;
                         case APP_MODE_M1: app_mode = APP_MODE_M2; break;
                         case APP_MODE_M2: app_mode = APP_MODE_M3; break;
                         case APP_MODE_M3: app_mode = APP_MODE_M4; break;
@@ -357,9 +361,9 @@ static void apply_button_events()
                 cmd_v = 0;                         // chord never moves the bed
                 up_held = down_held = false;
                 switch (app_mode_group(app_mode)) {
-                    case GROUP_DEFAULT: app_mode = APP_MODE_PITCH; break;
+                    case GROUP_DEFAULT: app_mode = APP_MODE_SIMPLE; break;
                     case GROUP_MANUAL:  app_mode = APP_MODE_M1; break;
-                    case GROUP_DEBUG:   app_mode = APP_MODE_PITCH; break;
+                    case GROUP_DEBUG:   app_mode = APP_MODE_SIMPLE; break;
                 }
                 break;
             default:
@@ -627,7 +631,7 @@ static int run_level_test()
     for (int i = 0; i < SIM_NUM_MOTORS; i++)
         cybergear_init(&motors[i], 0x00, k_ids[i], 0);
     motion_fsm_init(&fsm);
-    fsm.t_boot_us = 300 * 1000;
+    fsm.t_boot_timeout_us = 2000 * 1000;   // sim motors boot instantly
     safety_init(&safety);
     level_law_init(&level_law);
 
@@ -696,6 +700,8 @@ static int run_level_test()
         motion_fsm_step(&fsm, t, intent, vec, level_v, nullptr, level_done, in, dt, &fsm_out);
 
         sim_power_set(fsm_out.ssr_on, fsm_out.lock_on);
+        if (fsm_out.req_ping)
+            for (auto &m : motors) cybergear_ping(&m);
         if (fsm_out.req_init && !prev_out.req_init)
             for (auto &m : motors) {
                 cybergear_stop(&m);
@@ -760,7 +766,7 @@ static int run_travel_test()
     for (int i = 0; i < SIM_NUM_MOTORS; i++)
         cybergear_init(&motors[i], 0x00, k_ids[i], 0);
     motion_fsm_init(&fsm);
-    fsm.t_boot_us = 300 * 1000;
+    fsm.t_boot_timeout_us = 2000 * 1000;   // sim motors boot instantly
     safety_init(&safety);
     level_law_init(&level_law);
 
@@ -823,6 +829,8 @@ static int run_travel_test()
         motion_fsm_step(&fsm, t, intent, vec, nullptr, trim_v, false, in, dt, &fsm_out);
 
         sim_power_set(fsm_out.ssr_on, fsm_out.lock_on);
+        if (fsm_out.req_ping)
+            for (auto &m : motors) cybergear_ping(&m);
         if (fsm_out.req_init && !prev_out.req_init)
             for (auto &m : motors) {
                 cybergear_stop(&m);

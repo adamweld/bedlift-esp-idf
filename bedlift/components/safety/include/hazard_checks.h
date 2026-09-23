@@ -31,13 +31,23 @@ typedef struct {
     int64_t telem_loss_us;
     float temp_stop_c;
     float rack_warn_deg, rack_trip_deg;
-    float pos_desync_max_rad;
+    // H7 desync. VELOCITY coherence is active because the CyberGear position
+    // field saturates at +/-12.5 rad, so position tracking is only valid over
+    // the first ~12.5 rad of travel. When real multi-turn position lands, set
+    // pos_desync_enabled = true to switch back to the (more precise) position
+    // spread check — the machinery is kept below for exactly that.
+    bool  pos_desync_enabled;   // false: velocity check; true: position check
+    float pos_desync_max_rad;   // position-spread trip (rad), used when enabled
+    float vel_desync_max;       // velocity-spread trip (rad/s), active default
+    int   desync_samples;       // consecutive over-threshold cycles before trip
 
     // internal
     int overspeed_count[SYS_NUM_MOTORS];
     float cmd_env[SYS_NUM_MOTORS];     // command envelope (tolerates decel)
-    float theta_ref[SYS_NUM_MOTORS];   // command-integrated expected angle
+    float theta_ref[SYS_NUM_MOTORS];   // command-integrated expected angle (pos path)
     bool theta_ref_valid;
+    float vel_err[SYS_NUM_MOTORS];     // EMA of (fbv - cmd) per corner (vel path)
+    int desync_count;                  // consecutive cycles over the spread limit
     uint32_t warn_only_mask;           // flags demoted to WARN (mode-dependent)
 } safety_ctx_t;
 

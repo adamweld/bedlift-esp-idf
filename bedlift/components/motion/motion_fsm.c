@@ -12,7 +12,7 @@ void motion_fsm_init(motion_fsm_t *f)
     f->theta_unload = 0.12f;
     f->v_settle = 1.0f;
     f->v_level_max = 1.0f;
-    f->seat_torque = 1.5f;
+    f->seat_torque = 2.0f;   // seat when |torque| reaches ~2 N*m against the pawl
     f->t_boot_timeout_us = 4000 * 1000;   // failsafe upper bound, not a wait
     f->t_unload_max_us = 350 * 1000;
     f->t_unlock_us = 100 * 1000;
@@ -108,6 +108,7 @@ void motion_fsm_step(motion_fsm_t *f, int64_t now, motion_intent_e intent,
             } else {
                 for (int i = 0; i < SYS_NUM_MOTORS; i++) {
                     f->theta_start[i] = in[i].theta_rad;
+                    f->unload_adv[i] = 0.0f;
                     f->unloaded[i] = false;
                 }
                 enter(f, MOTION_PAWL_UNLOAD, now);
@@ -117,6 +118,7 @@ void motion_fsm_step(motion_fsm_t *f, int64_t now, motion_intent_e intent,
             out->req_enable = true;
             for (int i = 0; i < SYS_NUM_MOTORS; i++) {
                 f->theta_start[i] = in[i].theta_rad;
+                f->unload_adv[i] = 0.0f;
                 f->unloaded[i] = false;
             }
             enter(f, MOTION_PAWL_UNLOAD, now);
@@ -128,12 +130,24 @@ void motion_fsm_step(motion_fsm_t *f, int64_t now, motion_intent_e intent,
 
     case MOTION_PAWL_UNLOAD: {
         out->ssr_on = true;
-        // drive up until each motor's angle has advanced past its pawl seat
+        // Drive up until each motor has advanced theta_unload of rotation above
+        // the latch. Prefer ACTUAL position (theta - theta_start) — the motors
+        // were usually just powered, so position is fresh and unsaturated. Only
+        // when the position field is saturated near its +/-12.5 rad range (top
+        // of travel) fall back to integrating measured velocity over this short
+        // move, where the tiny drift is negligible.
         bool all = true;
         for (int i = 0; i < SYS_NUM_MOTORS; i++) {
-            if (!f->unloaded[i] &&
-                in[i].theta_rad - f->theta_start[i] >= f->theta_unload)
-                f->unloaded[i] = true;
+            if (!f->unloaded[i]) {
+                float adv;
+                if (fabsf(in[i].theta_rad) < 12.0f) {
+                    adv = in[i].theta_rad - f->theta_start[i];
+                } else {
+                    f->unload_adv[i] += fabsf(in[i].vel_rad_s) * dt_s;
+                    adv = f->unload_adv[i];
+                }
+                if (adv >= f->theta_unload) f->unloaded[i] = true;
+            }
             out->v_cmd[i] = f->unloaded[i] ? 0 : f->v_unload;
             if (!f->unloaded[i]) all = false;
         }
@@ -206,6 +220,7 @@ void motion_fsm_step(motion_fsm_t *f, int64_t now, motion_intent_e intent,
         if (fabsf(f->group_v) < 0.05f) {
             for (int i = 0; i < SYS_NUM_MOTORS; i++) {
                 f->seated[i] = false;
+                f->seat_moved[i] = false;
                 f->seat_since[i] = 0;
             }
             enter(f, MOTION_SETTLE, now);
@@ -219,10 +234,14 @@ void motion_fsm_step(motion_fsm_t *f, int64_t now, motion_intent_e intent,
         bool all = true;
         for (int i = 0; i < SYS_NUM_MOTORS; i++) {
             if (!f->seated[i]) {
-                // stall signature: commanded down, not moving, torque rising
-                bool contact = fabsf(in[i].torque_nm) > f->seat_torque &&
-                               fabsf(in[i].vel_rad_s) < 0.15f;
-                if (contact) {
+                // Lowering onto the pawl transfers the load to the pawl, which
+                // UNLOADS the motor (torque falls, bench-confirmed) — so the
+                // seat signature is a velocity STALL, not a torque rise. Accept
+                // the stall only after the corner has actually descended, so we
+                // don't false-seat on the zero-crossing at settle entry.
+                if (fabsf(in[i].vel_rad_s) > 0.3f) f->seat_moved[i] = true;
+                bool stalled = f->seat_moved[i] && fabsf(in[i].vel_rad_s) < 0.12f;
+                if (stalled) {
                     if (f->seat_since[i] == 0) f->seat_since[i] = now;
                     if (now - f->seat_since[i] > 30000) f->seated[i] = true;
                 } else {

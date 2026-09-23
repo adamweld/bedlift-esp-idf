@@ -15,7 +15,10 @@ void safety_init(safety_ctx_t *c)
     c->temp_stop_c = 70.0f;
     c->rack_warn_deg = RACK_WARN_DEG;
     c->rack_trip_deg = RACK_TRIP_DEG;
+    c->pos_desync_enabled = false;  // position saturates at 12.5 rad; use velocity
     c->pos_desync_max_rad = 2.0f;
+    c->vel_desync_max = 1.5f;       // one corner ~1.5 rad/s off its command = snag
+    c->desync_samples = 5;          // 50 ms sustained before tripping
 }
 
 static bool moving_state(motion_state_e m)
@@ -127,20 +130,53 @@ void safety_check(safety_ctx_t *c, int64_t now, float dt_s,
         online_n++;
     }
 
-    // ---- H7: corner desync — SPREAD of tracking errors, not absolute lag ----
-    // The motors lag the commanded velocity roughly equally (uniform tracking
-    // error is normal); desync is one CORNER diverging from the others. So we
-    // flag the spread (max-min) of per-motor tracking error, which is ~0 when
-    // all lag together and only grows when a single corner sticks/runs ahead.
-    if (moving && c->theta_ref_valid && online_n == SYS_NUM_MOTORS) {
-        float emax = -1e9f, emin = 1e9f;
-        for (int i = 0; i < SYS_NUM_MOTORS; i++) {
-            float e = motor[i].theta_rad - c->theta_ref[i];
-            if (e > emax) emax = e;
-            if (e < emin) emin = e;
+    // ---- H7: corner desync — SPREAD of per-corner tracking error -----------
+    // Desync is one CORNER diverging from the others; uniform lag is normal, so
+    // we flag the spread (max-min), which stays ~0 when all corners track and
+    // grows when one sticks or runs ahead.
+    //
+    // VELOCITY path (active): each corner should follow its OWN commanded
+    // velocity; the spread of (fbv - cmd) is ~0 even under trim (which changes
+    // the command, not the tracking error) and immune to the +/-12.5 rad
+    // position saturation. A light EMA tames feedback noise; a sustained
+    // counter avoids tripping on ramp transients.
+    //
+    // POSITION path (pos_desync_enabled): spread of (theta - command-integral),
+    // more precise but only valid until position saturates. Re-enable once real
+    // multi-turn position exists.
+    // Only during STEADY travel — during pawl-unload/settle the corners are
+    // loaded and finish independently (one motor pushing against the pawl while
+    // others idle), so their tracking-error spread is large by design and must
+    // not read as desync.
+    bool steady = (motion == MOTION_MOVING_UP || motion == MOTION_MOVING_DOWN ||
+                   motion == MOTION_LEVELING);
+    if (steady && online_n == SYS_NUM_MOTORS) {
+        float emax = -1e9f, emin = 1e9f, limit;
+        if (c->pos_desync_enabled && c->theta_ref_valid) {
+            for (int i = 0; i < SYS_NUM_MOTORS; i++) {
+                float e = motor[i].theta_rad - c->theta_ref[i];
+                if (e > emax) emax = e;
+                if (e < emin) emin = e;
+            }
+            limit = c->pos_desync_max_rad;
+        } else {
+            for (int i = 0; i < SYS_NUM_MOTORS; i++) {
+                float e = motor[i].vel_rad_s - v_cmd_prev[i];
+                c->vel_err[i] += 0.3f * (e - c->vel_err[i]);   // light EMA
+                if (c->vel_err[i] > emax) emax = c->vel_err[i];
+                if (c->vel_err[i] < emin) emin = c->vel_err[i];
+            }
+            limit = c->vel_desync_max;
         }
-        if (emax - emin > c->pos_desync_max_rad)
-            raise(out, SAFE_STOP, SAFE_F_DESYNC);
+        if (emax - emin > limit) {
+            if (++c->desync_count >= c->desync_samples)
+                raise(out, SAFE_STOP, SAFE_F_DESYNC);
+        } else {
+            c->desync_count = 0;
+        }
+    } else {
+        c->desync_count = 0;
+        for (int i = 0; i < SYS_NUM_MOTORS; i++) c->vel_err[i] = 0.0f;
     }
 
     // ---- H6: frame racking (with a physical-plausibility gate) --------------

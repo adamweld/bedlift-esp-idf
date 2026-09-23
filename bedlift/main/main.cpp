@@ -35,6 +35,13 @@
 
 static const char *TAG = "bedlift";
 
+// Per-module debug spew, each under its own tag so they can be silenced or
+// enabled independently via esp_log_level_set():
+//   motion — per-cycle motor telemetry [state] cmd/fbv/tq/th (always on)
+//   acc    — raw accelerometer readout (hidden for now; re-enable by setting
+//            its level back to INFO)
+// Safety warnings (TAG, ESP_LOGW) are never gated.
+
 static LGFX display;
 static LGFX_Sprite frame(&display);
 
@@ -333,10 +340,12 @@ static void motion_task(void *arg)
                 ESP_LOGW(TAG, "SAFETY v=%d flags=0x%03lx [%s]", sr.verdict,
                          (unsigned long)sr.flags, motion_state_str(s_fsm.state));
                 for (int i = 0; i < SYS_NUM_MOTORS; i++)
-                    ESP_LOGW(TAG, "  M%d cmd=%+.2f fbv=%+.2f dev=%+.2f osc=%d",
+                    ESP_LOGW(TAG, "  M%d cmd=%+.2f fbv=%+.2f verr=%+.2f osc=%d",
                              i + 1, v_prev[i], in[i].vel_rad_s,
-                             in[i].theta_rad - s_safety.theta_ref[i],
-                             s_safety.overspeed_count[i]);
+                             s_safety.vel_err[i], s_safety.overspeed_count[i]);
+                ESP_LOGW(TAG, "  desync_cnt=%d th[%+.1f %+.1f %+.1f %+.1f]",
+                         s_safety.desync_count, in[0].theta_rad, in[1].theta_rad,
+                         in[2].theta_rad, in[3].theta_rad);
                 ESP_LOGW(TAG, "  tilt F=%+.1f R=%+.1f twist=%+.1f",
                          tf.roll_deg, tr.roll_deg, tf.roll_deg - tr.roll_deg);
             }
@@ -347,16 +356,19 @@ static void motion_task(void *arg)
         if (s_fsm.state != MOTION_FAULT) apply_motion_out(&out, &prev);
         prev = out;
 
-        // periodic telemetry while active (1 Hz) — normal-operation visibility
+        // Always-on motor telemetry while active (4 Hz): cmd / feedback vel /
+        // torque / angle per corner, plus tilt — enough to see seating and
+        // desync dynamics live without the debug screen.
         static int64_t last_tlm = 0;
         if (s_fsm.state != MOTION_IDLE && s_fsm.state != MOTION_READY &&
-            now - last_tlm > 1000000) {
+            now - last_tlm > 250000) {
             last_tlm = now;
-            ESP_LOGI(TAG, "[%s] cmd[%+.2f %+.2f %+.2f %+.2f] fbv[%+.2f %+.2f %+.2f %+.2f] "
-                     "th[%+.1f %+.1f %+.1f %+.1f] tiltF%+.1f R%+.1f",
+            ESP_LOGI("motion", "[%s] cmd[%+.2f %+.2f %+.2f %+.2f] fbv[%+.2f %+.2f %+.2f %+.2f] "
+                     "tq[%+.1f %+.1f %+.1f %+.1f] th[%+.1f %+.1f %+.1f %+.1f] tiltF%+.1f R%+.1f",
                      motion_state_str(s_fsm.state),
                      out.v_cmd[0], out.v_cmd[1], out.v_cmd[2], out.v_cmd[3],
                      in[0].vel_rad_s, in[1].vel_rad_s, in[2].vel_rad_s, in[3].vel_rad_s,
+                     in[0].torque_nm, in[1].torque_nm, in[2].torque_nm, in[3].torque_nm,
                      in[0].theta_rad, in[1].theta_rad, in[2].theta_rad, in[3].theta_rad,
                      tf.roll_deg, tr.roll_deg);
         }
@@ -439,10 +451,29 @@ extern "C" void app_main(void)
                        display.width() / 2, display.height() / 2 + 12);
     vTaskDelay(pdMS_TO_TICKS(800));
 
+    esp_log_level_set("acc", ESP_LOG_WARN);   // hide accel spew; motion stays on
+
     state_init();
     motion_fsm_init(&s_fsm);
     safety_init(&s_safety);
     level_law_init(&s_level);
+
+    // app_config.hpp is the single tuning surface: apply its speeds/limits over
+    // the module defaults so travel speed, ramps, and the leveling clamp change
+    // in one place. (Leveling PI gains live in level_law_init.)
+    s_fsm.v_cruise     = V_CRUISE_RAD_S;
+    s_fsm.a_max        = A_MAX_RAD_S2;
+    s_fsm.a_stop       = A_STOP_RAD_S2;
+    s_fsm.v_level_max  = V_LEVEL_MAX_RAD_S;
+    s_fsm.v_settle     = V_SETTLE_RAD_S;
+    s_fsm.seat_torque  = SEAT_TORQUE_NM;      // seat force against the pawl
+    s_fsm.v_unload     = V_UNLOAD_RAD_S;
+    s_fsm.theta_unload = THETA_UNLOAD_RAD;    // rotation above the latch to unseat
+    s_fsm.t_unload_max_us = (int64_t)T_UNLOAD_TIMEOUT_MS * 1000;
+    s_fsm.t_settle_max_us = (int64_t)T_SETTLE_TIMEOUT_MS * 1000;
+    s_level.v_max      = V_LEVEL_MAX_RAD_S;
+    s_safety.vel_abs_max      = VEL_ABS_MAX_RAD_S;
+    s_safety.overspeed_factor = OVERSPEED_FACTOR;
 
     sensors_cfg_t sc = {
         .sda = PIN_I2C_SDA, .scl = PIN_I2C_SCL, .i2c_power_pin = PIN_I2C_POWER,

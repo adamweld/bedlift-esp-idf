@@ -69,9 +69,11 @@ typedef struct {
     float group_v;
     float vec[SYS_NUM_MOTORS];  // active direction vector
     bool descending;            // any negative component (unload path)
-    float theta_start[SYS_NUM_MOTORS];
+    float theta_start[SYS_NUM_MOTORS];  // pawl-unload angle reference (future: position path)
+    float unload_adv[SYS_NUM_MOTORS];   // rotation advanced this unseat (velocity-integrated)
     bool unloaded[SYS_NUM_MOTORS];
     bool seated[SYS_NUM_MOTORS];
+    bool seat_moved[SYS_NUM_MOTORS];    // corner descended before we accept a stall
     int64_t seat_since[SYS_NUM_MOTORS];
     bool init_done;
     bool level_complete;    // auto-completed; don't re-level until released

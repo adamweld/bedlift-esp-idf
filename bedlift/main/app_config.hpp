@@ -48,9 +48,9 @@
 #define MOTOR_DIR_SIGN { -1.0f, -1.0f, -1.0f, -1.0f }
 
 // --- Motion / control (initial conservative values; tuned in Phase B/C) ----
-#define V_CRUISE_RAD_S      3.0f   // travel speed (2.0 x 1.5, 2026-09-23)
+#define V_CRUISE_RAD_S      4.5f   // travel speed (3.0 x 1.5, 2026-09-24)
 #define A_MAX_RAD_S2        2.0f
-#define A_STOP_RAD_S2       4.0f
+#define A_STOP_RAD_S2       7.0f
 #define V_SETTLE_RAD_S      1.0f   // descent onto the pawl (seat detected by stall)
 #define SEAT_TORQUE_NM      2.0f   // unused for seating (torque DROPS on seat); kept for tuning
 #define V_UNLOAD_RAD_S      3.0f   // pawl-unload magnitude (sign TBD bench)

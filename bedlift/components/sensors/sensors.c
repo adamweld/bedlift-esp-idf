@@ -116,8 +116,8 @@ static void read_one(int idx, i2c_master_dev_handle_t d, bool ok, sensor_tilt_t 
     // confirmed at the bench when self-level drove roll the wrong way with the
     // earlier -x sign). Level-zero offsets captured 2026-09-23 with the frame
     // externally leveled, subtracted so a level frame reads 0/0.
-    const float PITCH_OFF_FRONT = 4.8f, ROLL_OFF_FRONT = 3.7f;
-    const float PITCH_OFF_REAR  = 3.2f, ROLL_OFF_REAR  = 3.7f;
+    const float PITCH_OFF_FRONT = 4.9f, ROLL_OFF_FRONT = 3.7f;
+    const float PITCH_OFF_REAR  = -0.2f, ROLL_OFF_REAR  = 3.7f;
     float pitch, roll;
     if (idx == 0) {                 // front: gravity down = -Y
         pitch = atan2f(-z, -y) * 57.2958f - PITCH_OFF_FRONT;

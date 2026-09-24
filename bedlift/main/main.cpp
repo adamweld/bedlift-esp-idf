@@ -231,34 +231,75 @@ static void sensor_task(void *arg)
 // ---------------------------------------------------------------------------
 // motion: 100 Hz safety -> FSM -> apply. Sole SSR/lock/velocity commander.
 // ---------------------------------------------------------------------------
+
+// Boot profiling: timestamps relative to SSR-close, logged once per power cycle.
+static struct {
+    int64_t ssr_close;
+    int64_t motor_first_rx[SYS_NUM_MOTORS];
+    int64_t all_online;
+    int64_t init_done;
+    bool logged;
+} s_boot_prof;
+
+static void boot_prof_reset(int64_t now)
+{
+    s_boot_prof.ssr_close = now;
+    for (int i = 0; i < SYS_NUM_MOTORS; i++) s_boot_prof.motor_first_rx[i] = 0;
+    s_boot_prof.all_online = 0;
+    s_boot_prof.init_done = 0;
+    s_boot_prof.logged = false;
+}
+
+static void boot_prof_motor_online(int idx, int64_t now)
+{
+    if (!s_boot_prof.motor_first_rx[idx])
+        s_boot_prof.motor_first_rx[idx] = now;
+}
+
+static void boot_prof_log(void)
+{
+    if (s_boot_prof.logged) return;
+    s_boot_prof.logged = true;
+    int64_t t0 = s_boot_prof.ssr_close;
+    for (int i = 0; i < SYS_NUM_MOTORS; i++)
+        ESP_LOGI(TAG, "boot: M%d online at +%lld ms", i + 1,
+                 (long long)((s_boot_prof.motor_first_rx[i] - t0) / 1000));
+    ESP_LOGI(TAG, "boot: all online +%lld ms, init done +%lld ms (total %lld ms)",
+             (long long)((s_boot_prof.all_online - t0) / 1000),
+             (long long)((s_boot_prof.init_done - t0) / 1000),
+             (long long)((s_boot_prof.init_done - t0) / 1000));
+}
+
 static void apply_motion_out(const motion_out_t *o, const motion_out_t *prev)
 {
-    static int64_t ssr_on_us = 0;
-    if (o->ssr_on && !prev->ssr_on) ssr_on_us = esp_timer_get_time();
+    if (o->ssr_on && !prev->ssr_on) boot_prof_reset(esp_timer_get_time());
     set_ssr(o->ssr_on);
     set_lock(o->lock_on);
-    // presence probe: ping all motors, throttled to ~20 Hz (motion runs 100 Hz)
+    // presence probe: ping all motors, throttled to ~100 Hz (motion runs 100 Hz)
     if (o->req_ping) {
         static int64_t last_ping = 0;
         int64_t now = esp_timer_get_time();
-        if (now - last_ping > 50000) {
+        if (now - last_ping > 10000) {
             last_ping = now;
             for (int i = 0; i < SYS_NUM_MOTORS; i++) cybergear_ping(canbus_motor(i));
         }
     }
     if (o->req_init && !prev->req_init) {
-        // measured, not assumed: how long from SSR-close to all motors online
-        ESP_LOGI(TAG, "motors online %lld ms after SSR close",
-                 (long long)((esp_timer_get_time() - ssr_on_us) / 1000));
+        s_boot_prof.all_online = esp_timer_get_time();
+        int64_t t_init_start = esp_timer_get_time();
         for (int i = 0; i < SYS_NUM_MOTORS; i++) {
-            // proven order (old motor.cpp): stop -> mode -> speed -> current -> torque
             cybergear_motor_t *m = canbus_motor(i);
-            cybergear_stop(m); vTaskDelay(pdMS_TO_TICKS(2));
-            cybergear_set_mode(m, CYBERGEAR_MODE_SPEED); vTaskDelay(pdMS_TO_TICKS(2));
-            cybergear_set_limit_speed(m, MOTOR_LIMIT_SPEED_RADS); vTaskDelay(pdMS_TO_TICKS(2));
-            cybergear_set_limit_current(m, MOTOR_LIMIT_CURRENT_A); vTaskDelay(pdMS_TO_TICKS(2));
+            cybergear_stop(m);
+            cybergear_set_mode(m, CYBERGEAR_MODE_SPEED);
+            cybergear_set_limit_speed(m, MOTOR_LIMIT_SPEED_RADS);
+            cybergear_set_limit_current(m, MOTOR_LIMIT_CURRENT_A);
             cybergear_set_limit_torque(m, MOTOR_LIMIT_TORQUE_NM);
         }
+        s_boot_prof.init_done = esp_timer_get_time();
+        ESP_LOGI(TAG, "init: %d SDO writes in %lld ms",
+                 SYS_NUM_MOTORS * 5,
+                 (long long)((s_boot_prof.init_done - t_init_start) / 1000));
+        boot_prof_log();
     }
     if (o->req_enable && !prev->req_enable)
         for (int i = 0; i < SYS_NUM_MOTORS; i++) cybergear_enable(canbus_motor(i));
@@ -289,6 +330,7 @@ static void motion_task(void *arg)
             in[i].temp_c = st.temperature;
             in[i].online = out.ssr_on && (now - st.last_rx_us < TELEM_LOSS_MS * 1000);
             in[i].faults = f;
+            if (in[i].online) boot_prof_motor_online(i, now);
         }
 
         // tilt from state
@@ -331,8 +373,8 @@ static void motion_task(void *arg)
             intent = MI_NONE;
         }
 
-        // Diagnostic: dump hazard detail once, only when the hazard SET changes
-        // (rising edge), so a latched fault doesn't spam. Quiet otherwise.
+        // Diagnostic: dump hazard detail when flags change (rising edge) AND
+        // pre-trip breadcrumbs at 2 Hz when counters are elevated.
         static uint32_t last_flags = 0;
         if (sr.flags != last_flags) {
             uint32_t added = sr.flags & ~last_flags;
@@ -340,11 +382,21 @@ static void motion_task(void *arg)
                 ESP_LOGW(TAG, "SAFETY v=%d flags=0x%03lx [%s]", sr.verdict,
                          (unsigned long)sr.flags, motion_state_str(s_fsm.state));
                 for (int i = 0; i < SYS_NUM_MOTORS; i++)
-                    ESP_LOGW(TAG, "  M%d cmd=%+.2f fbv=%+.2f verr=%+.2f osc=%d",
-                             i + 1, v_prev[i], in[i].vel_rad_s,
-                             s_safety.vel_err[i], s_safety.overspeed_count[i]);
-                ESP_LOGW(TAG, "  desync_cnt=%d th[%+.1f %+.1f %+.1f %+.1f]",
-                         s_safety.desync_count, in[0].theta_rad, in[1].theta_rad,
+                    ESP_LOGW(TAG, "  M%d cmd=%+.2f env=%+.2f fbv=%+.2f verr=%+.2f osc=%d/%d",
+                             i + 1, v_prev[i], s_safety.cmd_env[i], in[i].vel_rad_s,
+                             s_safety.vel_err[i], s_safety.overspeed_count[i],
+                             s_safety.overspeed_samples);
+                float ve_max = -1e9f, ve_min = 1e9f;
+                int worst = 0;
+                for (int i = 0; i < SYS_NUM_MOTORS; i++) {
+                    if (s_safety.vel_err[i] > ve_max) { ve_max = s_safety.vel_err[i]; worst = i; }
+                    if (s_safety.vel_err[i] < ve_min) ve_min = s_safety.vel_err[i];
+                }
+                ESP_LOGW(TAG, "  desync_cnt=%d/%d spread=%.2f (lim %.2f) worst=M%d "
+                         "th[%+.1f %+.1f %+.1f %+.1f]",
+                         s_safety.desync_count, s_safety.desync_samples,
+                         ve_max - ve_min, s_safety.vel_desync_max, worst + 1,
+                         in[0].theta_rad, in[1].theta_rad,
                          in[2].theta_rad, in[3].theta_rad);
                 ESP_LOGW(TAG, "  tilt F=%+.1f R=%+.1f twist=%+.1f",
                          tf.roll_deg, tr.roll_deg, tf.roll_deg - tr.roll_deg);
@@ -352,24 +404,60 @@ static void motion_task(void *arg)
             last_flags = sr.flags;
         }
 
+        // Pre-trip breadcrumbs (2 Hz): log when overspeed or desync counters
+        // are non-zero but haven't tripped yet — shows the buildup in the log.
+        {
+            static int64_t last_bc = 0;
+            bool elevated = s_safety.desync_count > 0;
+            for (int i = 0; i < SYS_NUM_MOTORS && !elevated; i++)
+                if (s_safety.overspeed_count[i] > 0) elevated = true;
+            if (elevated && now - last_bc > 500000) {
+                last_bc = now;
+                ESP_LOGW("safety", "PRE [%s] osc[%d %d %d %d] desync=%d "
+                         "verr[%+.2f %+.2f %+.2f %+.2f] "
+                         "cmd[%+.2f %+.2f %+.2f %+.2f] env[%+.2f %+.2f %+.2f %+.2f] "
+                         "fbv[%+.2f %+.2f %+.2f %+.2f]",
+                         motion_state_str(s_fsm.state),
+                         s_safety.overspeed_count[0], s_safety.overspeed_count[1],
+                         s_safety.overspeed_count[2], s_safety.overspeed_count[3],
+                         s_safety.desync_count,
+                         s_safety.vel_err[0], s_safety.vel_err[1],
+                         s_safety.vel_err[2], s_safety.vel_err[3],
+                         v_prev[0], v_prev[1], v_prev[2], v_prev[3],
+                         s_safety.cmd_env[0], s_safety.cmd_env[1],
+                         s_safety.cmd_env[2], s_safety.cmd_env[3],
+                         in[0].vel_rad_s, in[1].vel_rad_s,
+                         in[2].vel_rad_s, in[3].vel_rad_s);
+            }
+        }
+
+        static motion_state_e prev_state = MOTION_IDLE;
         motion_fsm_step(&s_fsm, now, intent, vec, level_v, trim_v, level_done, in, dt, &out);
+        if (s_fsm.state != prev_state) {
+            ESP_LOGI(TAG, "FSM %s -> %s", motion_state_str(prev_state),
+                     motion_state_str(s_fsm.state));
+            prev_state = s_fsm.state;
+        }
         if (s_fsm.state != MOTION_FAULT) apply_motion_out(&out, &prev);
         prev = out;
 
-        // Always-on motor telemetry while active (4 Hz): cmd / feedback vel /
-        // torque / angle per corner, plus tilt — enough to see seating and
-        // desync dynamics live without the debug screen.
+        // Always-on motor telemetry while active (4 Hz): cmd / envelope /
+        // feedback vel / torque / angle per corner, plus vel-err and tilt.
         static int64_t last_tlm = 0;
         if (s_fsm.state != MOTION_IDLE && s_fsm.state != MOTION_READY &&
             now - last_tlm > 250000) {
             last_tlm = now;
-            ESP_LOGI("motion", "[%s] cmd[%+.2f %+.2f %+.2f %+.2f] fbv[%+.2f %+.2f %+.2f %+.2f] "
-                     "tq[%+.1f %+.1f %+.1f %+.1f] th[%+.1f %+.1f %+.1f %+.1f] tiltF%+.1f R%+.1f",
+            ESP_LOGI("motion", "[%s] cmd[%+.2f %+.2f %+.2f %+.2f] "
+                     "fbv[%+.2f %+.2f %+.2f %+.2f] "
+                     "tq[%+.1f %+.1f %+.1f %+.1f] th[%+.1f %+.1f %+.1f %+.1f] "
+                     "verr[%+.2f %+.2f %+.2f %+.2f] tiltF%+.1f R%+.1f",
                      motion_state_str(s_fsm.state),
                      out.v_cmd[0], out.v_cmd[1], out.v_cmd[2], out.v_cmd[3],
                      in[0].vel_rad_s, in[1].vel_rad_s, in[2].vel_rad_s, in[3].vel_rad_s,
                      in[0].torque_nm, in[1].torque_nm, in[2].torque_nm, in[3].torque_nm,
                      in[0].theta_rad, in[1].theta_rad, in[2].theta_rad, in[3].theta_rad,
+                     s_safety.vel_err[0], s_safety.vel_err[1],
+                     s_safety.vel_err[2], s_safety.vel_err[3],
                      tf.roll_deg, tr.roll_deg);
         }
 
@@ -451,7 +539,7 @@ extern "C" void app_main(void)
                        display.width() / 2, display.height() / 2 + 12);
     vTaskDelay(pdMS_TO_TICKS(800));
 
-    esp_log_level_set("acc", ESP_LOG_WARN);   // hide accel spew; motion stays on
+    esp_log_level_set("acc", ESP_LOG_INFO);   // accel debug ON for offset calibration
 
     state_init();
     motion_fsm_init(&s_fsm);

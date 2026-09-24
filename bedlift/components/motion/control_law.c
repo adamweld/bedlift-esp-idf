@@ -5,8 +5,8 @@
 
 void level_law_init(level_law_t *l)
 {
-    l->kp_roll = 0.225f;    // 1 deg error -> 0.225 rad/s corner (0.15 x 1.5, 2026-09-23)
-    l->kp_pitch = 0.225f;   // NOTE: P-only law today — no integral term yet
+    l->kp_roll = 0.30f;     // 1 deg error -> 0.30 rad/s corner (was 0.225, 2026-09-24)
+    l->kp_pitch = 0.30f;    // NOTE: P-only law today — no integral term yet
     l->deadband_deg = 0.25f;
     l->v_max = 1.0f;
     l->done_deg = LEVEL_TARGET_DEG;  // auto-lock target = the inner ring on the UI

@@ -14,6 +14,7 @@ void motion_fsm_init(motion_fsm_t *f)
     f->v_level_max = 1.0f;
     f->seat_torque = 2.0f;   // seat when |torque| reaches ~2 N*m against the pawl
     f->t_boot_timeout_us = 4000 * 1000;   // failsafe upper bound, not a wait
+    f->t_unload_min_us = 0;
     f->t_unload_max_us = 350 * 1000;
     f->t_unlock_us = 150 * 1000;
     f->t_settle_max_us = 1000 * 1000;
@@ -151,7 +152,7 @@ void motion_fsm_step(motion_fsm_t *f, int64_t now, motion_intent_e intent,
             out->v_cmd[i] = f->unloaded[i] ? 0 : f->v_unload;
             if (!f->unloaded[i]) all = false;
         }
-        if (all || age >= f->t_unload_max_us)
+        if ((all && age >= f->t_unload_min_us) || age >= f->t_unload_max_us)
             enter(f, MOTION_UNLOCK, now);
         if (intent == MI_NONE) {                 // released during unload
             enter(f, MOTION_RAMP_DOWN, now);

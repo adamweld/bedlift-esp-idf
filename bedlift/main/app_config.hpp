@@ -54,9 +54,10 @@
 #define A_STOP_RAD_S2       7.0f
 #define V_SETTLE_RAD_S      1.0f   // descent onto the pawl (seat detected by stall)
 #define SEAT_TORQUE_NM      2.0f   // unused for seating (torque DROPS on seat); kept for tuning
-#define V_UNLOAD_RAD_S      3.0f   // pawl-unload magnitude (sign TBD bench)
-#define THETA_UNLOAD_RAD    0.15f  // rotation to clear the latch when unseating
-#define T_UNLOAD_TIMEOUT_MS 350
+#define V_UNLOAD_RAD_S      4.5f   // pawl-unload magnitude (match cruise for loaded beds)
+#define THETA_UNLOAD_RAD    0.25f  // rotation to clear the latch when unseating
+#define T_UNLOAD_TIMEOUT_MS 500
+#define T_UNLOAD_MIN_MS     150    // minimum unload drive time (flex under load)
 #define T_SETTLE_TIMEOUT_MS 2000   // headroom for all corners to stall-seat before disable
 #define T_BOOT_SETTLE_MS    300    // SSR-close settle before probing; online-wait gates the rest
 #define T_READY_KEEPWARM_MS 2000   // SSR depowers after 2 s of inaction

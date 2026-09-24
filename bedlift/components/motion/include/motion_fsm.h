@@ -58,6 +58,7 @@ typedef struct {
     float v_level_max;      // clamp on leveling velocities
     float seat_torque;      // |torque| indicating pawl contact
     int64_t t_boot_timeout_us; // give up waiting for motors -> FAULT (failsafe bound)
+    int64_t t_unload_min_us;
     int64_t t_unload_max_us;
     int64_t t_unlock_us;    // solenoid retract dwell
     int64_t t_settle_max_us;

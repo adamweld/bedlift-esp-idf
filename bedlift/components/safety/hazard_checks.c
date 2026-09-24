@@ -17,7 +17,7 @@ void safety_init(safety_ctx_t *c)
     c->rack_trip_deg = RACK_TRIP_DEG;
     c->pos_desync_enabled = false;  // position saturates at 12.5 rad; use velocity
     c->pos_desync_max_rad = 2.0f;
-    c->vel_desync_max = 1.5f;       // one corner ~1.5 rad/s off its command = snag
+    c->vel_desync_max = 2.0f;       // one corner ~2.0 rad/s off its command = snag
     c->desync_samples = 10;         // 100 ms sustained before tripping
 }
 

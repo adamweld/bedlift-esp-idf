@@ -597,6 +597,7 @@ extern "C" void app_main(void)
     s_fsm.seat_torque  = SEAT_TORQUE_NM;      // seat force against the pawl
     s_fsm.v_unload     = V_UNLOAD_RAD_S;
     s_fsm.theta_unload = THETA_UNLOAD_RAD;    // rotation above the latch to unseat
+    s_fsm.t_unload_min_us = (int64_t)T_UNLOAD_MIN_MS * 1000;
     s_fsm.t_unload_max_us = (int64_t)T_UNLOAD_TIMEOUT_MS * 1000;
     s_fsm.t_settle_max_us = (int64_t)T_SETTLE_TIMEOUT_MS * 1000;
     s_fsm.t_keepwarm_us   = (int64_t)T_READY_KEEPWARM_MS * 1000;

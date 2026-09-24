@@ -49,6 +49,7 @@
 
 // --- Motion / control (initial conservative values; tuned in Phase B/C) ----
 #define V_CRUISE_RAD_S      4.5f   // travel speed (3.0 x 1.5, 2026-09-24)
+#define V_MANUAL_RAD_S      3.0f   // pitch/roll/twist speed (V_CRUISE / 1.5)
 #define A_MAX_RAD_S2        2.0f
 #define A_STOP_RAD_S2       7.0f
 #define V_SETTLE_RAD_S      1.0f   // descent onto the pawl (seat detected by stall)

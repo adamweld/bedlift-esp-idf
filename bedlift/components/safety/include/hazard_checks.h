@@ -48,6 +48,8 @@ typedef struct {
     bool theta_ref_valid;
     float vel_err[SYS_NUM_MOTORS];     // EMA of (fbv - cmd) per corner (vel path)
     int desync_count;                  // consecutive cycles over the spread limit
+    int64_t steady_entry_us;           // when we last entered a steady-travel state
+    bool was_steady;                   // previous cycle's steady flag
     uint32_t warn_only_mask;           // flags demoted to WARN (mode-dependent)
 } safety_ctx_t;
 

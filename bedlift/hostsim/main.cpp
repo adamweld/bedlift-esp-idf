@@ -349,9 +349,9 @@ static void apply_button_events()
                     t1 = t2; t2 = e.t_us;
                     // single short: cycle within the current group
                     switch (app_mode) {
-                        case APP_MODE_SIMPLE: app_mode = APP_MODE_PITCH; break;
-                        case APP_MODE_PITCH: app_mode = APP_MODE_ROLL; break;
-                        case APP_MODE_ROLL:  app_mode = APP_MODE_TWIST; break;
+                        case APP_MODE_SIMPLE: app_mode = APP_MODE_ROLL; break;
+                        case APP_MODE_ROLL:  app_mode = APP_MODE_PITCH; break;
+                        case APP_MODE_PITCH: app_mode = APP_MODE_TWIST; break;
                         case APP_MODE_TWIST: app_mode = APP_MODE_SIMPLE; break;
                         case APP_MODE_M1: app_mode = APP_MODE_M2; break;
                         case APP_MODE_M2: app_mode = APP_MODE_M3; break;
@@ -374,11 +374,10 @@ static void apply_button_events()
             case BEV_CHORD_UPDOWN:
                 cmd_v = 0;                         // chord never moves the bed
                 up_held = down_held = false;
-                // enter manual group on PITCH; up/down(SIMPLE) cycles last
                 switch (app_mode_group(app_mode)) {
-                    case GROUP_DEFAULT: app_mode = APP_MODE_PITCH; break;
+                    case GROUP_DEFAULT: app_mode = APP_MODE_ROLL; break;
                     case GROUP_MANUAL:  app_mode = APP_MODE_M1; break;
-                    case GROUP_DEBUG:   app_mode = APP_MODE_PITCH; break;
+                    case GROUP_DEBUG:   app_mode = APP_MODE_ROLL; break;
                 }
                 break;
             default:

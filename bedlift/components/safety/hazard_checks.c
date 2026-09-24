@@ -18,7 +18,7 @@ void safety_init(safety_ctx_t *c)
     c->pos_desync_enabled = false;  // position saturates at 12.5 rad; use velocity
     c->pos_desync_max_rad = 2.0f;
     c->vel_desync_max = 1.5f;       // one corner ~1.5 rad/s off its command = snag
-    c->desync_samples = 5;          // 50 ms sustained before tripping
+    c->desync_samples = 10;         // 100 ms sustained before tripping
 }
 
 static bool moving_state(motion_state_e m)
@@ -150,7 +150,13 @@ void safety_check(safety_ctx_t *c, int64_t now, float dt_s,
     // not read as desync.
     bool steady = (motion == MOTION_MOVING_UP || motion == MOTION_MOVING_DOWN ||
                    motion == MOTION_LEVELING);
-    if (steady && online_n == SYS_NUM_MOTORS) {
+    if (steady && !c->was_steady) c->steady_entry_us = now;
+    c->was_steady = steady;
+    int cmd_nonzero = 0;
+    for (int i = 0; i < SYS_NUM_MOTORS; i++)
+        if (fabsf(v_cmd_prev[i]) > 0.01f) cmd_nonzero++;
+    bool past_grace = steady && (now - c->steady_entry_us > 750000);
+    if (past_grace && online_n == SYS_NUM_MOTORS && cmd_nonzero > 1) {
         float emax = -1e9f, emin = 1e9f, limit;
         if (c->pos_desync_enabled && c->theta_ref_valid) {
             for (int i = 0; i < SYS_NUM_MOTORS; i++) {

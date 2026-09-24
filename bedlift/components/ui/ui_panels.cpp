@@ -13,8 +13,8 @@ struct ModeMeta {
 static const ModeMeta k_modes[APP_MODE_COUNT] = {
     { "LIFT",    "arrows-up-down",         0 },
     { "UP/DOWN", "arrows-up-down",         0 },   // raw up/down, no feedback
-    { "PITCH",   "view-360-arrow",         3 },
     { "ROLL",    "rotate-360",             3 },
+    { "PITCH",   "view-360-arrow",         3 },
     { "TWIST",   "stretching",             0 },
     { "M1 FL",   "box-align-bottom-right", 0 },
     { "M2 FR",   "box-align-bottom-right", 3 },

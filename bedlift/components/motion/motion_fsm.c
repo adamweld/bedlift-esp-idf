@@ -15,7 +15,7 @@ void motion_fsm_init(motion_fsm_t *f)
     f->seat_torque = 2.0f;   // seat when |torque| reaches ~2 N*m against the pawl
     f->t_boot_timeout_us = 4000 * 1000;   // failsafe upper bound, not a wait
     f->t_unload_max_us = 350 * 1000;
-    f->t_unlock_us = 100 * 1000;
+    f->t_unlock_us = 150 * 1000;
     f->t_settle_max_us = 1000 * 1000;
     f->t_keepwarm_us = 2 * 1000 * 1000;   // depower SSRs after 2 s of inaction
     f->state = MOTION_IDLE;

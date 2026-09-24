@@ -132,9 +132,9 @@ static void apply_btn_event(const btn_event_t *e)
                 }
                 t1 = t2; t2 = e->t_us;
                 switch (s_mode) {
-                    case APP_MODE_SIMPLE: s_mode = APP_MODE_PITCH; break;
-                    case APP_MODE_PITCH: s_mode = APP_MODE_ROLL; break;
-                    case APP_MODE_ROLL:  s_mode = APP_MODE_TWIST; break;
+                    case APP_MODE_SIMPLE: s_mode = APP_MODE_ROLL; break;
+                    case APP_MODE_ROLL:  s_mode = APP_MODE_PITCH; break;
+                    case APP_MODE_PITCH: s_mode = APP_MODE_TWIST; break;
                     case APP_MODE_TWIST: s_mode = APP_MODE_SIMPLE; break;
                     case APP_MODE_M1: s_mode = APP_MODE_M2; break;
                     case APP_MODE_M2: s_mode = APP_MODE_M3; break;
@@ -153,13 +153,10 @@ static void apply_btn_event(const btn_event_t *e)
             break;
         case BEV_CHORD_UPDOWN:
             s_up = s_down = false;
-            // Enter the manual group on PITCH; cycle order is
-            // PITCH -> ROLL -> TWIST -> UP/DOWN(SIMPLE) -> PITCH, so the raw
-            // no-feedback escape hatch sits last, after twist.
             switch (app_mode_group(s_mode)) {
-                case GROUP_DEFAULT: s_mode = APP_MODE_PITCH; break;
+                case GROUP_DEFAULT: s_mode = APP_MODE_ROLL; break;
                 case GROUP_MANUAL:  s_mode = APP_MODE_M1; break;
-                case GROUP_DEBUG:   s_mode = APP_MODE_PITCH; break;
+                case GROUP_DEBUG:   s_mode = APP_MODE_ROLL; break;
             }
             break;
         default: break;
@@ -270,24 +267,29 @@ static void boot_prof_log(void)
              (long long)((s_boot_prof.init_done - t0) / 1000));
 }
 
-static void apply_motion_out(const motion_out_t *o, const motion_out_t *prev)
+static void apply_motion_out(const motion_out_t *o, const motion_out_t *prev,
+                             int jog_idx)
 {
     if (o->ssr_on && !prev->ssr_on) boot_prof_reset(esp_timer_get_time());
     set_ssr(o->ssr_on);
     set_lock(o->lock_on);
-    // presence probe: ping all motors, throttled to ~100 Hz (motion runs 100 Hz)
     if (o->req_ping) {
         static int64_t last_ping = 0;
         int64_t now = esp_timer_get_time();
         if (now - last_ping > 10000) {
             last_ping = now;
-            for (int i = 0; i < SYS_NUM_MOTORS; i++) cybergear_ping(canbus_motor(i));
+            if (jog_idx >= 0)
+                cybergear_ping(canbus_motor(jog_idx));
+            else
+                for (int i = 0; i < SYS_NUM_MOTORS; i++) cybergear_ping(canbus_motor(i));
         }
     }
     if (o->req_init && !prev->req_init) {
         s_boot_prof.all_online = esp_timer_get_time();
         int64_t t_init_start = esp_timer_get_time();
-        for (int i = 0; i < SYS_NUM_MOTORS; i++) {
+        int lo = (jog_idx >= 0) ? jog_idx : 0;
+        int hi = (jog_idx >= 0) ? jog_idx + 1 : SYS_NUM_MOTORS;
+        for (int i = lo; i < hi; i++) {
             cybergear_motor_t *m = canbus_motor(i);
             cybergear_stop(m);
             cybergear_set_mode(m, CYBERGEAR_MODE_SPEED);
@@ -297,14 +299,22 @@ static void apply_motion_out(const motion_out_t *o, const motion_out_t *prev)
         }
         s_boot_prof.init_done = esp_timer_get_time();
         ESP_LOGI(TAG, "init: %d SDO writes in %lld ms",
-                 SYS_NUM_MOTORS * 5,
+                 (hi - lo) * 5,
                  (long long)((s_boot_prof.init_done - t_init_start) / 1000));
         boot_prof_log();
     }
-    if (o->req_enable && !prev->req_enable)
-        for (int i = 0; i < SYS_NUM_MOTORS; i++) cybergear_enable(canbus_motor(i));
-    if (o->req_disable && !prev->req_disable)
-        for (int i = 0; i < SYS_NUM_MOTORS; i++) cybergear_stop(canbus_motor(i));
+    if (o->req_enable && !prev->req_enable) {
+        if (jog_idx >= 0)
+            cybergear_enable(canbus_motor(jog_idx));
+        else
+            for (int i = 0; i < SYS_NUM_MOTORS; i++) cybergear_enable(canbus_motor(i));
+    }
+    if (o->req_disable && !prev->req_disable) {
+        if (jog_idx >= 0)
+            cybergear_stop(canbus_motor(jog_idx));
+        else
+            for (int i = 0; i < SYS_NUM_MOTORS; i++) cybergear_stop(canbus_motor(i));
+    }
 }
 
 static void motion_task(void *arg)
@@ -343,9 +353,27 @@ static void motion_task(void *arg)
         float vec[SYS_NUM_MOTORS] = {};
         float level_v[SYS_NUM_MOTORS] = {};
         float trim_v[SYS_NUM_MOTORS] = {};
+        bool jog_mode = (app_mode_group(s_mode) == GROUP_DEBUG);
+        if (jog_mode) {
+            int ji = s_mode - APP_MODE_M1;
+            for (int i = 0; i < SYS_NUM_MOTORS; i++) {
+                if (i == ji) continue;
+                in[i].online = in[ji].online;
+                in[i].vel_rad_s = 0;
+                in[i].torque_nm = 0;
+                in[i].faults = 0;
+            }
+        }
 #if MOTION_ARMED
-        if (s_level_held && s_mode == APP_MODE_LIFT) intent = MI_LEVEL;
-        else if (s_up != s_down) {
+        if (jog_mode) {
+            if (s_up != s_down) {
+                intent = MI_MOVE;
+                int ji = s_mode - APP_MODE_M1;
+                vec[ji] = s_up ? 1.0f : -1.0f;
+            }
+        } else if (s_level_held && s_mode == APP_MODE_LIFT) {
+            intent = MI_LEVEL;
+        } else if (s_up != s_down) {
             intent = MI_MOVE;
             float sign = s_up ? 1.0f : -1.0f;
             for (int i = 0; i < SYS_NUM_MOTORS; i++) vec[i] = sign * k_vec_up[s_mode][i];
@@ -431,21 +459,33 @@ static void motion_task(void *arg)
             }
         }
 
+        mode_group_e grp = app_mode_group(s_mode);
+        s_fsm.v_cruise = (grp == GROUP_MANUAL || grp == GROUP_DEBUG)
+                         ? V_MANUAL_RAD_S : V_CRUISE_RAD_S;
         static motion_state_e prev_state = MOTION_IDLE;
         motion_fsm_step(&s_fsm, now, intent, vec, level_v, trim_v, level_done, in, dt, &out);
+        // Single-motor jog: mask all motors except the selected one so
+        // the FSM's unload/settle/move cycle only acts on that corner.
+        if (jog_mode) {
+            int ji = s_mode - APP_MODE_M1;
+            for (int i = 0; i < SYS_NUM_MOTORS; i++)
+                if (i != ji) out.v_cmd[i] = 0.0f;
+        }
         if (s_fsm.state != prev_state) {
             ESP_LOGI(TAG, "FSM %s -> %s", motion_state_str(prev_state),
                      motion_state_str(s_fsm.state));
             prev_state = s_fsm.state;
         }
-        if (s_fsm.state != MOTION_FAULT) apply_motion_out(&out, &prev);
+        int jog_idx = jog_mode ? (s_mode - APP_MODE_M1) : -1;
+        if (s_fsm.state != MOTION_FAULT) apply_motion_out(&out, &prev, jog_idx);
         prev = out;
 
         // Always-on motor telemetry while active (4 Hz): cmd / envelope /
         // feedback vel / torque / angle per corner, plus vel-err and tilt.
         static int64_t last_tlm = 0;
-        if (s_fsm.state != MOTION_IDLE && s_fsm.state != MOTION_READY &&
-            now - last_tlm > 250000) {
+        bool tlm_active = s_fsm.state != MOTION_IDLE &&
+                          s_fsm.state != MOTION_READY;
+        if (tlm_active && now - last_tlm > 250000) {
             last_tlm = now;
             ESP_LOGI("motion", "[%s] cmd[%+.2f %+.2f %+.2f %+.2f] "
                      "fbv[%+.2f %+.2f %+.2f %+.2f] "

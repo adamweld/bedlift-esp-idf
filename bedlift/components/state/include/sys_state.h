@@ -50,8 +50,8 @@ typedef enum {
 typedef enum {
     APP_MODE_LIFT = 0,      // hold up/down (travel trim), hold center to self-level
     APP_MODE_SIMPLE,        // raw up/down, NO feedback (manual group) — escape hatch
-    APP_MODE_PITCH,         // front pair vs rear pair
     APP_MODE_ROLL,          // left pair vs right pair
+    APP_MODE_PITCH,         // front pair vs rear pair
     APP_MODE_TWIST,         // diagonal pairs (frame torsion)
     APP_MODE_M1,            // individual winch jog (debug group)
     APP_MODE_M2,
